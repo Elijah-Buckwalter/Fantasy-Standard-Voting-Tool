@@ -1,0 +1,630 @@
+package main
+
+import (
+	"crypto/subtle"
+	"fmt"
+	"html/template"
+	"net/http"
+	"strconv"
+	"sync"
+	"time"
+)
+
+// User represents a client account managed by the Master
+type User struct {
+	Password string
+	Tickets  int
+}
+
+// Symbol represents an item up for voting or talking
+type Symbol struct {
+	Name    string
+	Votes   int
+	Target  int
+	Reached bool
+}
+
+// HistoricalSession archives past events for the Master log
+type HistoricalSession struct {
+	Mode         string
+	Symbol       string
+	FinalTallies string
+	Timestamp    string
+}
+
+// ServerState is our single source of truth in memory
+type ServerState struct {
+	mu            sync.Mutex
+	MasterPass    string
+	Users         map[string]*User
+	Symbols       map[string]*Symbol
+	History       []HistoricalSession
+	TimerEnd      time.Time
+	VotingActive  bool
+	TalkingActive bool
+	ActiveSymName string
+}
+
+var state = &ServerState{
+	MasterPass:    "master123",
+	Users:         make(map[string]*User),
+	Symbols:       make(map[string]*Symbol),
+	History:       make([]HistoricalSession, 0),
+	VotingActive:  false,
+	TalkingActive: false,
+}
+
+var templates = template.Must(template.New("all").Parse(`
+{{define "login"}}
+<!DOCTYPE html>
+<html>
+<head><title>Login</title><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body>
+	<h2>System Login</h2>
+	{{if .}}<p style="color:red;">{{.}}</p>{{end}}
+	<form action="/login" method="POST">
+		<input type="text" name="username" placeholder="Username" required><br><br>
+		<input type="password" name="password" placeholder="Password" required><br><br>
+		<button type="submit">Login</button>
+	</form>
+</body>
+</html>
+{{end}}
+
+{{define "master"}}
+<!DOCTYPE html>
+<html>
+<head>
+	<title>Master Dashboard</title>
+	<script>
+		let time = {{.TimeLeft}};
+		setInterval(() => {
+			if(time > 0) {
+				time--;
+				let elements = document.getElementsByClassName("live-countdown");
+				for(let el of elements) {
+					el.innerText = time + "s remaining";
+				}
+			} else {
+				let elements = document.getElementsByClassName("live-countdown");
+				for(let el of elements) {
+					el.innerText = "0s (Expired)";
+				}
+			}
+		}, 1000);
+
+		setInterval(() => {
+			fetch('/master?ajax=true')
+				.then(response => response.text())
+				.then(html => {
+					let parser = new DOMParser();
+					let doc = parser.parseFromString(html, 'text/html');
+					
+					let userList = document.getElementById("user-list");
+					let newStaticUsers = doc.getElementById("user-list").innerHTML;
+					if (userList.innerHTML !== newStaticUsers) {
+						userList.innerHTML = newStaticUsers;
+					}
+					
+					let liveSessions = document.getElementById("live-sessions");
+					let newStaticSessions = doc.getElementById("live-sessions").innerHTML;
+					if (liveSessions.innerHTML !== newStaticSessions) {
+						liveSessions.innerHTML = newStaticSessions;
+					}
+
+					let historyLog = document.getElementById("history-log");
+					let newHistoryLog = doc.getElementById("history-log").innerHTML;
+					if (historyLog.innerHTML !== newHistoryLog) {
+						historyLog.innerHTML = newHistoryLog;
+					}
+				});
+		}, 1000);
+	</script>
+</head>
+<body>
+	<h1>Master Control Panel</h1>
+	<hr>
+	<h3>Manage User Tickets</h3>
+	<form action="/master/update-tickets" method="POST">
+		<input type="text" name="target_user" placeholder="Username" required>
+		<input type="number" name="amount" placeholder="Tickets (+/-)" required>
+		<button type="submit">Update Balance</button>
+	</form>
+	
+	<h3>Current Users Status</h3>
+	<ul id="user-list">
+		{{range $name, $user := .Users}}
+			<li><strong>{{$name}}</strong>: {{$user.Tickets}} tickets remaining</li>
+		{{end}}
+	</ul>
+	<hr>
+	
+	<h3>Launch Session</h3>
+	<div style="background: #f4f4f4; padding: 15px; border-radius: 5px;">
+		<form method="POST">
+			<input type="text" name="symbol_name" placeholder="Symbol Name" required><br><br>
+			<input type="number" name="duration" placeholder="Timer (Seconds)" required><br><br>
+			
+			<div style="border-top: 1px dashed #ccc; padding-top: 10px;">
+				<input type="number" name="target" placeholder="Ticket Threshold (Voting Only)"><br><br>
+				<button type="submit" formaction="/master/start-voting" style="background: green; color: white;">Start VOTING Session</button>
+				<button type="submit" formaction="/master/start-talking" style="background: blue; color: white;">Start TALKING Session</button>
+			</div>
+		</form>
+	</div>
+
+	<h3>Live Sessions Status</h3>
+	<div id="live-sessions">
+		{{range $name, $sym := .Symbols}}
+			{{if $.VotingActive}}
+				<p>
+					Mode: <strong style="color:green;">VOTING</strong> | 
+					Symbol: <strong>{{$sym.Name}}</strong> | 
+					Timer: <span class="live-countdown" style="font-weight:bold; color:orange;">{{$.TimeLeft}}s remaining</span> | 
+					Status: {{if $sym.Reached}}<strong style="color:red;">❌ Threshold Closed Early</strong>{{else}}<strong>⏳ Open</strong>{{end}} |
+					Progress: [{{$sym.Votes}} / {{$sym.Target}}]
+				</p>
+			{{else if $.TalkingActive}}
+				<p>
+					Mode: <strong style="color:blue;">TALKING (No Tickets)</strong> | 
+					Symbol: <strong>{{$sym.Name}}</strong> | 
+					Timer: <span class="live-countdown" style="font-weight:bold; color:orange;">{{$.TimeLeft}}s remaining</span> | 
+					Status: 🗣️ Discussion Active
+				</p>
+			{{end}}
+		{{else}}
+			<p>No session is currently running.</p>
+		{{end}}
+	</div>
+
+	<hr>
+	<h3>Prior Sessions</h3>
+	<div id="history-log" style="background: #fafafa; padding: 10px; border: 1px solid #ddd; max-height: 200px; overflow-y: auto;">
+		{{range .History}}
+			<p style="margin: 5px 0; border-bottom: 1px solid #eee; padding-bottom: 5px;">
+				[{{.Timestamp}}] Mode: <strong>{{.Mode}}</strong> | Symbol: <strong>{{.Symbol}}</strong> | Details: <em>{{.FinalTallies}}</em>
+			</p>
+		{{else}}
+			<p style="color: #777;">No prior sessions recorded yet.</p>
+		{{end}}
+	</div>
+</body>
+</html>
+{{end}}
+
+{{define "client"}}
+<!DOCTYPE html>
+<html>
+<head>
+	<title>Voting Portal</title>
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<script>
+		let globalTimeLeft = {{.TimeLeft}};
+
+		// 1. Independent visual countdown clock thread
+		setInterval(() => {
+			let timerEl = document.getElementById("timer");
+			if (!timerEl) return;
+
+			let sessionArea = document.getElementById("session-area");
+			let currentMode = sessionArea ? sessionArea.getAttribute("data-session-state") : "none";
+
+			if (globalTimeLeft > 0) {
+				timerEl.innerText = globalTimeLeft + "s remaining";
+				timerEl.style.color = "orange";
+				globalTimeLeft--;
+			} else {
+				if (currentMode === "voting") {
+					timerEl.innerText = "Voting Closed";
+					timerEl.style.color = "orange";
+				} else if (currentMode === "talking") {
+					timerEl.innerText = "Session Closed";
+					timerEl.style.color = "orange";
+				} else {
+					timerEl.innerText = "No Session Active";
+					timerEl.style.color = "red";
+				}
+			}
+		}, 1000);
+
+		// 2. Synchronized data sync background thread
+		setInterval(() => {
+			fetch('/client?username={{.Username}}&ajax=true')
+				.then(response => response.text())
+				.then(html => {
+					let parser = new DOMParser();
+					let doc = parser.parseFromString(html, 'text/html');
+					
+					// Update ticket balances securely without blinking layout containers
+					let currentCount = document.getElementById("ticket-count");
+					let newCount = doc.getElementById("ticket-count");
+					if (currentCount && newCount && currentCount.innerText !== newCount.innerText) {
+						currentCount.innerText = newCount.innerText;
+					}
+					
+					let currentSessionArea = document.getElementById("session-area");
+					let newSessionArea = doc.getElementById("session-area");
+					
+					if (currentSessionArea && newSessionArea) {
+						let currentMode = currentSessionArea.getAttribute("data-session-state");
+						let newMode = newSessionArea.getAttribute("data-session-state");
+						
+						// Keep local clock variable aligned with truth on server
+						let serverTimeRaw = newSessionArea.getAttribute("data-time-left");
+						if (serverTimeRaw) {
+							let parsedServerTime = parseInt(serverTimeRaw);
+							// Sync time variable directly if mismatch detected
+							if (Math.abs(globalTimeLeft - parsedServerTime) > 1 || parsedServerTime === 0) {
+								globalTimeLeft = parsedServerTime;
+							}
+						}
+
+						// Only re-render container structural boxes if dashboard mode state transitions
+						if (currentMode !== newMode) {
+							currentSessionArea.setAttribute("data-session-state", newMode);
+							currentSessionArea.innerHTML = newSessionArea.innerHTML;
+							currentSessionArea.setAttribute("data-time-left", serverTimeRaw);
+						} else if (currentMode !== "none") {
+							// Update interior active interactive vote components safely without blinking structural tags
+							let currentForms = currentSessionArea.querySelectorAll(".interactive-node");
+							let newForms = newSessionArea.querySelectorAll(".interactive-node");
+							if (currentForms.length === newForms.length) {
+								for (let i = 0; i < currentForms.length; i++) {
+									if (currentForms[i].innerHTML !== newForms[i].innerHTML) {
+										currentForms[i].innerHTML = newForms[i].innerHTML;
+									}
+								}
+							}
+						}
+					}
+				});
+		}, 1000);
+	</script>
+</head>
+<body>
+	<h2>Welcome, {{.Username}}</h2>
+	<div style="background:#eee; padding:10px; display:inline-block;">
+		Your Current Ticket Count: <strong id="ticket-count" style="font-size:1.5em; color:blue;">{{.Tickets}}</strong>
+	</div>
+	{{if .Error}}<p style="color:red; font-weight:bold;">{{.Error}}</p>{{end}}
+	<hr>
+	
+	{{if .VotingActive}}
+		<div id="session-area" data-session-state="voting" data-time-left="{{.TimeLeft}}">
+			<h3>Active Session</h3>
+			<p id="timer" style="font-size:1.2em; font-weight:bold; color:orange;">{{.TimeLeft}}s remaining</p>
+			{{range $name, $sym := .Symbols}}
+				<div class="interactive-node" style="border:1px solid #ccc; padding:10px; margin-bottom:5px;">
+					<strong>Symbol up for Vote: {{ $sym.Name }}</strong> 
+					<br><br>
+					{{if $sym.Reached}}
+						<button disabled style="color:red;">Threshold Closed</button>
+					{{else}}
+						<form action="/client/vote" method="POST" style="display:inline;">
+							<input type="hidden" name="username" value="{{$.Username}}">
+							<input type="hidden" name="symbol" value="{{$sym.Name}}">
+							<button type="submit" style="background:green; color:white; padding:5px 15px;">Use 1 Ticket to Vote</button>
+						</form>
+					{{end}}
+				</div>
+			{{end}}
+		</div>
+	{{else if .TalkingActive}}
+		<div id="session-area" data-session-state="talking" data-time-left="{{.TimeLeft}}">
+			<h3>Active Session</h3>
+			<p id="timer" style="font-size:1.2em; font-weight:bold; color:orange;">{{.TimeLeft}}s remaining</p>
+			{{range $name, $sym := .Symbols}}
+				<div class="interactive-node" style="border:1px solid blue; background: #eef5ff; padding:15px; margin-bottom:5px; border-radius:5px;">
+					<strong style="font-size: 1.3em;">Currently Discussing: {{ $sym.Name }}</strong> 
+					<p style="color: #555; margin-bottom:0;">🗣️ Talking session is open. No tickets required, voting is disabled.</p>
+				</div>
+			{{end}}
+		</div>
+	{{else}}
+		<div id="session-area" data-session-state="none" data-time-left="0">
+			<h3>Active Session</h3>
+			<p id="timer" style="font-size:1.2em; font-weight:bold; color:red;">No Session Active</p>
+			<p>No active voting or talking session at this moment.</p>
+		</div>
+	{{end}}
+</body>
+</html>
+{{end}}
+`))
+
+func main() {
+	state.Users["user1"] = &User{Password: "password123", Tickets: 10}
+	state.Users["user2"] = &User{Password: "password456", Tickets: 5}
+
+	http.HandleFunc("/", loginPageHandler)
+	http.HandleFunc("/login", loginHandler)
+	http.HandleFunc("/master", masterDashboardHandler)
+	http.HandleFunc("/master/update-tickets", updateTicketsHandler)
+	http.HandleFunc("/master/start-voting", startVotingHandler)
+	http.HandleFunc("/master/start-talking", startTalkingHandler)
+	http.HandleFunc("/client", clientDashboardHandler)
+	http.HandleFunc("/client/vote", voteHandler)
+
+	fmt.Println("Server starting on http://localhost:8080")
+	if err := http.ListenAndServe(":8080", nil); err != nil {
+		fmt.Printf("Server failed to start: %v\n", err)
+	}
+}
+
+func loginPageHandler(w http.ResponseWriter, r *http.Request) {
+	templates.ExecuteTemplate(w, "login", r.URL.Query().Get("error"))
+}
+
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		return
+	}
+	username := r.FormValue("username")
+	password := r.FormValue("password")
+
+	if username == "master" {
+		if subtle.ConstantTimeCompare([]byte(password), []byte(state.MasterPass)) == 1 {
+			http.Redirect(w, r, "/master", http.StatusSeeOther)
+			return
+		}
+	} else {
+		state.mu.Lock()
+		user, exists := state.Users[username]
+		state.mu.Unlock()
+
+		if exists && user != nil {
+			if subtle.ConstantTimeCompare([]byte(user.Password), []byte(password)) == 1 {
+				http.Redirect(w, r, "/client?username="+username, http.StatusSeeOther)
+				return
+			}
+		}
+	}
+	http.Redirect(w, r, "/?error=Invalid+credentials", http.StatusSeeOther)
+}
+
+func checkAndArchiveExpiredSession() {
+	if (state.VotingActive || state.TalkingActive) && time.Now().After(state.TimerEnd) {
+		modeName := "TALKING"
+		detailText := "Discussion completed cleanly"
+		if state.VotingActive {
+			modeName = "VOTING"
+			detailText = "Voting period expired"
+		}
+
+		for _, sym := range state.Symbols {
+			if state.VotingActive {
+				detailText = fmt.Sprintf("Final Votes: %d (Target: %d)", sym.Votes, sym.Target)
+				if sym.Reached {
+					detailText += " [Threshold Met]"
+				}
+			}
+			state.History = append([]HistoricalSession{{
+				Mode:         modeName,
+				Symbol:       sym.Name,
+				FinalTallies: detailText,
+				Timestamp:    time.Now().Format("15:04:05"),
+			}}, state.History...)
+		}
+		state.VotingActive = false
+		state.TalkingActive = false
+		state.Symbols = make(map[string]*Symbol)
+	}
+}
+
+func masterDashboardHandler(w http.ResponseWriter, r *http.Request) {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	checkAndArchiveExpiredSession()
+
+	timeLeft := int(time.Until(state.TimerEnd).Seconds())
+	if timeLeft <= 0 {
+		timeLeft = 0
+	}
+
+	data := struct {
+		Users         map[string]*User
+		Symbols       map[string]*Symbol
+		History       []HistoricalSession
+		VotingActive  bool
+		TalkingActive bool
+		TimeLeft      int
+	}{
+		Users:         state.Users,
+		Symbols:       state.Symbols,
+		History:       state.History,
+		VotingActive:  state.VotingActive,
+		TalkingActive: state.TalkingActive,
+		TimeLeft:      timeLeft,
+	}
+
+	templates.ExecuteTemplate(w, "master", data)
+}
+
+func clientDashboardHandler(w http.ResponseWriter, r *http.Request) {
+	state.mu.Lock()
+	username := r.URL.Query().Get("username")
+	user, exists := state.Users[username]
+	
+	if !exists || user == nil {
+		state.mu.Unlock()
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+
+	checkAndArchiveExpiredSession()
+
+	timeLeft := int(time.Until(state.TimerEnd).Seconds())
+	if timeLeft <= 0 {
+		timeLeft = 0
+	}
+
+	data := struct {
+		Username      string
+		Tickets       int
+		Symbols       map[string]*Symbol
+		VotingActive  bool
+		TalkingActive bool
+		TimeLeft      int
+		Error         string
+	}{
+		Username:      username,
+		Tickets:       user.Tickets,
+		Symbols:       state.Symbols,
+		VotingActive:  state.VotingActive,
+		TalkingActive: state.TalkingActive,
+		TimeLeft:      timeLeft,
+		Error:         r.URL.Query().Get("error"),
+	}
+	state.mu.Unlock()
+
+	templates.ExecuteTemplate(w, "client", data)
+}
+
+func voteHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		return
+	}
+	username := r.FormValue("username")
+	symbolName := r.FormValue("symbol")
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	if time.Now().After(state.TimerEnd) {
+		checkAndArchiveExpiredSession()
+	}
+
+	user, userExists := state.Users[username]
+	symbol, symbolExists := state.Symbols[symbolName]
+
+	if !userExists || !symbolExists || !state.VotingActive {
+		http.Redirect(w, r, "/client?username="+username+"&error=Voting+is+inactive", http.StatusSeeOther)
+		return
+	}
+
+	if symbol.Reached {
+		http.Redirect(w, r, "/client?username="+username+"&error=Threshold+reached!+Ticket+returned.", http.StatusSeeOther)
+		return
+	}
+
+	if user.Tickets <= 0 {
+		http.Redirect(w, r, "/client?username="+username+"&error=No+tickets", http.StatusSeeOther)
+		return
+	}
+
+	user.Tickets--
+	symbol.Votes++
+
+	if symbol.Votes >= symbol.Target {
+		symbol.Reached = true
+		state.History = append([]HistoricalSession{{
+			Mode:         "VOTING",
+			Symbol:       symbol.Name,
+			FinalTallies: fmt.Sprintf("Threshold Met Early! Total Votes: %d (Target: %d)", symbol.Votes, symbol.Target),
+			Timestamp:    time.Now().Format("15:04:05"),
+		}}, state.History...)
+		state.VotingActive = false
+		state.Symbols = make(map[string]*Symbol)
+	}
+
+	http.Redirect(w, r, "/client?username="+username, http.StatusSeeOther)
+}
+
+func forceArchiveActiveSession() {
+	if state.VotingActive || state.TalkingActive {
+		modeName := "TALKING"
+		detailText := "Interrupted/Closed by Master"
+		if state.VotingActive {
+			modeName = "VOTING"
+		}
+		for _, sym := range state.Symbols {
+			if state.VotingActive {
+				detailText = fmt.Sprintf("Interrupted early. Votes caught: %d / %d", sym.Votes, sym.Target)
+			}
+			state.History = append([]HistoricalSession{{
+				Mode:         modeName,
+				Symbol:       sym.Name,
+				FinalTallies: detailText,
+				Timestamp:    time.Now().Format("15:04:05"),
+			}}, state.History...)
+		}
+	}
+}
+
+func startVotingHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	forceArchiveActiveSession()
+
+	state.Symbols = make(map[string]*Symbol)
+	symbolName := r.FormValue("symbol_name")
+	target, _ := strconv.Atoi(r.FormValue("target"))
+	durationSec, _ := strconv.Atoi(r.FormValue("duration"))
+
+	state.Symbols[symbolName] = &Symbol{
+		Name:    symbolName,
+		Votes:   0,
+		Target:  target,
+		Reached: false,
+	}
+
+	state.TimerEnd = time.Now().Add(time.Duration(durationSec) * time.Second)
+	state.TalkingActive = false
+	state.VotingActive = true
+
+	http.Redirect(w, r, "/master", http.StatusSeeOther)
+}
+
+func startTalkingHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	forceArchiveActiveSession()
+
+	state.Symbols = make(map[string]*Symbol)
+	symbolName := r.FormValue("symbol_name")
+	durationSec, _ := strconv.Atoi(r.FormValue("duration"))
+
+	state.Symbols[symbolName] = &Symbol{
+		Name:    symbolName,
+		Votes:   0,
+		Target:  0,
+		Reached: false,
+	}
+
+	state.TimerEnd = time.Now().Add(time.Duration(durationSec) * time.Second)
+	state.VotingActive = false
+	state.TalkingActive = true
+
+	http.Redirect(w, r, "/master", http.StatusSeeOther)
+}
+
+func updateTicketsHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	targetUser := r.FormValue("target_user")
+	amount, _ := strconv.Atoi(r.FormValue("amount"))
+
+	if _, exists := state.Users[targetUser]; !exists {
+		state.Users[targetUser] = &User{Password: "123", Tickets: 0}
+	}
+
+	state.Users[targetUser].Tickets += amount
+	if state.Users[targetUser].Tickets < 0 {
+		state.Users[targetUser].Tickets = 0
+	}
+
+	http.Redirect(w, r, "/master", http.StatusSeeOther)
+}
