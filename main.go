@@ -138,6 +138,62 @@ var templates = template.Must(template.New("all").Parse(`
 		{{end}}
 	</ul>
 	<hr>
+
+	<h3>Generate QR Code For Users</h3>
+    <div style="margin-bottom: 20px;">
+        <button id="qr-portal-btn" style="background: #4A5568; color: white; padding: 10px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 0.95rem;">
+            📱 Generate Portal QR Code
+        </button>
+    </div>
+
+    <script>
+		document.getElementById('qr-portal-btn').addEventListener('click', function() {
+			// Force the target URL to use your active ngrok public tunnel
+			var targetUrl = 'https://unknotty-overstrong-atticus.ngrok-free.dev/'; 
+			
+			var qrApiUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' + encodeURIComponent(targetUrl);
+			var newTab = window.open();
+			
+			newTab.document.write(
+				'<!DOCTYPE html>' +
+				'<html>' +
+				'<head>' +
+				'    <title>Portal QR Code</title>' +
+				'    <meta name="viewport" content="width=device-width, initial-scale=1.0">' +
+				'    <style>' +
+				'        body { ' +
+				'            display: flex; ' +
+				'            flex-direction: column;' +
+				'            align-items: center; ' +
+				'            justify-content: center; ' +
+				'            height: 100vh; ' +
+				'            margin: 0; ' +
+				'            font-family: system-ui, -apple-system, sans-serif; ' +
+				'            background: #F7FAFC;' +
+				'        }' +
+				'        .qr-card { ' +
+				'            text-align: center; ' +
+				'            padding: 24px; ' +
+				'            background: white; ' +
+				'            box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06); ' +
+				'            border-radius: 8px; ' +
+				'        }' +
+				'        img { max-width: 100%; height: auto; margin-bottom: 16px; display: block; }' +
+				'        p { color: #2D3748; font-weight: 600; font-size: 1.1rem; margin: 0; word-break: break-all; }' +
+				'    </style>' +
+				'</head>' +
+				'<body>' +
+				'    <div class="qr-card">' +
+				'        <img src="' + qrApiUrl + '" alt="QR Code" width="300" height="300">' +
+				'        <p>' + targetUrl + '</p>' +
+				'    </div>' +
+				'</body>' +
+				'</html>'
+			);
+			newTab.document.close();
+		});
+	</script>
+    <hr>
 	
 	<h3>Launch Session</h3>
 	<div style="background: #f4f4f4; padding: 15px; border-radius: 5px;">
@@ -346,7 +402,7 @@ func main() {
 	http.HandleFunc("/client/vote", voteHandler)
 
 	fmt.Println("Server starting on http://localhost:8080")
-	if err := http.ListenAndServe(":8080", nil); err != nil {
+	if err := http.ListenAndServe("0.0.0.0:8080", nil); err != nil {
 		fmt.Printf("Server failed to start: %v\n", err)
 	}
 }
