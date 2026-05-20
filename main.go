@@ -164,15 +164,18 @@ var templates = template.Must(template.New("all").Parse(`
     
     <h3>Launch Session</h3>
     <div style="background: #f4f4f4; padding: 15px; border-radius: 5px;">
-        <form method="POST">
+        <form method="POST" style="display: inline;">
             <input type="text" name="symbol_name" placeholder="Symbol Name or 3-Letter MTG Set Code" required><br><br>
             <input type="number" name="duration" placeholder="Timer (Seconds)" required><br><br>
             
-            <div style="border-top: 1px dashed #ccc; padding-top: 10px;">
+            <div style="border-top: 1px dashed #ccc; padding-top: 10px; margin-bottom: 10px;">
                 <input type="number" name="target" placeholder="Ticket Threshold (Voting Only)"><br><br>
                 <button type="submit" formaction="/master/start-voting" style="background: green; color: white;">Start VOTING Session</button>
                 <button type="submit" formaction="/master/start-talking" style="background: blue; color: white;">Start TALKING Session</button>
             </div>
+        </form>
+        <form action="/master/kill-session" method="POST" style="display: inline;">
+            <button type="submit" style="background: red; color: white;">Kill Active Session</button>
         </form>
     </div>
 
@@ -468,6 +471,7 @@ func main() {
 	http.HandleFunc("/master/update-tickets", updateTicketsHandler)
 	http.HandleFunc("/master/start-voting", startVotingHandler)
 	http.HandleFunc("/master/start-talking", startTalkingHandler)
+	http.HandleFunc("/master/kill-session", killSessionHandler)
 	http.HandleFunc("/client", clientDashboardHandler)
 	http.HandleFunc("/client/vote", voteHandler)
 
@@ -674,14 +678,14 @@ func voteHandler(w http.ResponseWriter, r *http.Request) {
 func forceArchiveActiveSession() {
 	if state.VotingActive || state.TalkingActive {
 		modeName := "TALKING"
-		detailText := "Interrupted/Closed by Master"
+		detailText := "Killed manually by Master"
 		symbolName := ""
 		
 		if state.VotingActive {
 			modeName = "VOTING"
 			for _, sym := range state.Symbols {
 				symbolName = sym.Name
-				detailText = fmt.Sprintf("Interrupted early. Votes caught: %d / %d", sym.Votes, sym.Target)
+				detailText = fmt.Sprintf("Killed early. Votes caught: %d / %d", sym.Votes, sym.Target)
 			}
 		} else if state.TalkingActive {
 			for _, sym := range state.Symbols {
@@ -782,6 +786,18 @@ func startTalkingHandler(w http.ResponseWriter, r *http.Request) {
 
 	state.TimerEnd = time.Now().Add(time.Duration(durationSec) * time.Second)
 	state.TalkingActive = true
+
+	http.Redirect(w, r, "/master", http.StatusSeeOther)
+}
+
+func killSessionHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	forceArchiveActiveSession()
 
 	http.Redirect(w, r, "/master", http.StatusSeeOther)
 }
