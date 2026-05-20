@@ -14,8 +14,10 @@ import (
 
 // User represents a client account managed by the Master
 type User struct {
-	Password string
-	Tickets  int
+	Password   string
+	Tickets    int
+	IsActive   bool      // True if a browser session is running this account
+	LastActive time.Time // Tracked timestamp to manage heartbeat auto-timeouts
 }
 
 // Symbol represents an item up for voting or talking
@@ -64,7 +66,7 @@ var templates = template.Must(template.New("all").Parse(`
 <head><title>Login</title><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
 <body>
     <h2>System Login</h2>
-    {{if .}}<p style="color:red;">{{.}}</p>{{end}}
+    {{if .}}<p style="color:red; font-weight:bold;">{{.}}</p>{{end}}
     <form action="/login" method="POST">
         <input type="text" name="username" placeholder="Username" required><br><br>
         <input type="password" name="password" placeholder="Password" required><br><br>
@@ -126,18 +128,32 @@ var templates = template.Must(template.New("all").Parse(`
 </head>
 <body>
     <h1>Master Control Panel</h1>
+    {{if .Error}}<p style="color:red; font-weight:bold;">{{.Error}}</p>{{end}}
     <hr>
-    <h3>Manage User Tickets</h3>
-    <form action="/master/update-tickets" method="POST">
-        <input type="text" name="target_user" placeholder="Username" required>
-        <input type="number" name="amount" placeholder="Tickets (+/-)" required>
-        <button type="submit">Update Balance</button>
+    
+    <h3>Create or Update User Account</h3>
+    <form action="/master/save-user" method="POST">
+        <input type="text" name="target_user" placeholder="Username (Required)" required>
+        <input type="text" name="password" placeholder="Password (Required)" required>
+        <input type="number" name="tickets" placeholder="Tickets (Blank = 0)">
+        <button type="submit">Save Account</button>
     </form>
     
     <h3>Current Users Status</h3>
     <ul id="user-list">
         {{range $name, $user := .Users}}
-            <li><strong>{{$name}}</strong>: {{$user.Tickets}} tickets remaining</li>
+            <li style="margin-bottom: 6px;">
+                <strong>{{$name}}</strong>: {{$user.Tickets}} tickets remaining 
+                {{if $user.IsActive}}
+                    <span style="color: green; font-weight: bold; margin-left: 5px;">● Connected</span>
+                {{else}}
+                    <span style="color: #777; margin-left: 5px;">○ Offline</span>
+                {{end}}
+                <form action="/master/delete-user" method="POST" style="display:inline; margin-left:10px;">
+                    <input type="hidden" name="target_user" value="{{$name}}">
+                    <button type="submit" style="background: #991b1b; color: white; font-size: 0.8em; padding: 2px 6px;">Delete Account</button>
+                </form>
+            </li>
         {{end}}
     </ul>
     <hr>
@@ -233,7 +249,6 @@ var templates = template.Must(template.New("all").Parse(`
         let currentLoadedSetCode = "{{.ActiveSetCode}}";
         let debounceTimer;
 
-        // Triggers the Scryfall search directly from the client's browser
         function fetchScryfallData(query) {
             const grid = document.getElementById("scryfall-live-grid");
             const statusText = document.getElementById("scryfall-status");
@@ -248,7 +263,7 @@ var templates = template.Must(template.New("all").Parse(`
                 })
                 .then(resData => {
                     statusText.innerText = "Showing matches for: " + query;
-                    grid.innerHTML = ""; // Wipe clean
+                    grid.innerHTML = ""; 
 
                     if (resData.data && resData.data.length > 0) {
                         resData.data.forEach(card => {
@@ -283,7 +298,6 @@ var templates = template.Must(template.New("all").Parse(`
                 });
         }
 
-        // Debounce wrapper prevents flooding Scryfall API on every keypress
         function handleSearchInput(val) {
             clearTimeout(debounceTimer);
             debounceTimer = setTimeout(() => {
@@ -291,11 +305,9 @@ var templates = template.Must(template.New("all").Parse(`
             }, 450); 
         }
 
-        // Initialize search field execution once page DOM maps out
         function initSearchEngine() {
             const searchBar = document.getElementById("scryfall-search-input");
             if (searchBar) {
-                // Pre-fetch defaults instantly using the anchored configuration
                 fetchScryfallData(searchBar.value);
             }
         }
@@ -327,8 +339,16 @@ var templates = template.Must(template.New("all").Parse(`
 
         setInterval(() => {
             fetch('/client?username={{.Username}}&ajax=true')
-                .then(response => response.text())
+                .then(response => {
+                    // If the server rejects the heartbeat (e.g. session stolen or invalidated), boot them
+                    if (response.status === http.StatusUnauthorized || response.redirected) {
+                        window.location.href = "/?error=Session+disconnected";
+                        return;
+                    }
+                    return response.text();
+                })
                 .then(html => {
+                    if(!html) return;
                     let parser = new DOMParser();
                     let doc = parser.parseFromString(html, 'text/html');
                     
@@ -355,7 +375,6 @@ var templates = template.Must(template.New("all").Parse(`
 
                         let newSetCode = newSessionArea.getAttribute("data-set-code");
 
-                        // Complete UI Swap only if session mode changed or a totally different MTG Set was chosen
                         if (currentMode !== newMode || currentLoadedSetCode !== newSetCode) {
                             currentLoadedSetCode = newSetCode;
                             currentSessionArea.setAttribute("data-session-state", newMode);
@@ -363,10 +382,8 @@ var templates = template.Must(template.New("all").Parse(`
                             currentSessionArea.innerHTML = newSessionArea.innerHTML;
                             currentSessionArea.setAttribute("data-time-left", serverTimeRaw);
                             
-                            // Re-init the dynamic search pipeline for the brand new search context
                             setTimeout(initSearchEngine, 50);
                         } else {
-                            // Keep basic interaction blocks synced cleanly
                             let currentForms = currentSessionArea.querySelectorAll(".interactive-node");
                             let newForms = newSessionArea.querySelectorAll(".interactive-node");
                             if (currentForms.length === newForms.length) {
@@ -412,7 +429,6 @@ var templates = template.Must(template.New("all").Parse(`
                 </div>
             {{end}}
 
-            {{/* Client-Side Live Search Engine Component */}}
             {{if .ActiveSetCode}}
                 <div style="margin-top:20px; border-top: 2px solid #ccc; padding-top: 15px;">
                     <h4 style="color: purple; margin-bottom: 8px;">🃏 Filter Live Set Content:</h4>
@@ -436,7 +452,6 @@ var templates = template.Must(template.New("all").Parse(`
                 </div>
             {{end}}
 
-            {{/* Client-Side Live Search Engine Component */}}
             {{if .ActiveSetCode}}
                 <div style="margin-top:20px; border-top: 2px solid #ccc; padding-top: 15px;">
                     <h4 style="color: purple; margin-bottom: 8px;">🃏 Filter Live Set Content:</h4>
@@ -465,10 +480,26 @@ func main() {
 	state.Users["user1"] = &User{Password: "password123", Tickets: 10}
 	state.Users["user2"] = &User{Password: "password456", Tickets: 5}
 
+	// Dynamic system watch loop running inside separate routine
+	go func() {
+		for {
+			time.Sleep(2 * time.Second)
+			state.mu.Lock()
+			// Scan client accounts to automatically prune dead links
+			for _, user := range state.Users {
+				if user.IsActive && time.Since(user.LastActive) > 5*time.Second {
+					user.IsActive = false
+				}
+			}
+			state.mu.Unlock()
+		}
+	}()
+
 	http.HandleFunc("/", loginPageHandler)
 	http.HandleFunc("/login", loginHandler)
 	http.HandleFunc("/master", masterDashboardHandler)
-	http.HandleFunc("/master/update-tickets", updateTicketsHandler)
+	http.HandleFunc("/master/save-user", saveUserHandler)
+	http.HandleFunc("/master/delete-user", deleteUserHandler)
 	http.HandleFunc("/master/start-voting", startVotingHandler)
 	http.HandleFunc("/master/start-talking", startTalkingHandler)
 	http.HandleFunc("/master/kill-session", killSessionHandler)
@@ -500,14 +531,26 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 	} else {
 		state.mu.Lock()
 		user, exists := state.Users[username]
-		state.mu.Unlock()
 
 		if exists && user != nil {
 			if subtle.ConstantTimeCompare([]byte(user.Password), []byte(password)) == 1 {
+				// Block authentication if another context is already occupying the account structure
+				if user.IsActive && time.Since(user.LastActive) <= 5*time.Second {
+					state.mu.Unlock()
+					http.Redirect(w, r, "/?error=This+account+is+already+logged+in+elsewhere.", http.StatusSeeOther)
+					return
+				}
+
+				// Take ownership of the session slot
+				user.IsActive = true
+				user.LastActive = time.Now()
+				state.mu.Unlock()
+
 				http.Redirect(w, r, "/client?username="+username, http.StatusSeeOther)
 				return
 			}
 		}
+		state.mu.Unlock()
 	}
 	http.Redirect(w, r, "/?error=Invalid+credentials", http.StatusSeeOther)
 }
@@ -592,6 +635,10 @@ func clientDashboardHandler(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
+
+	// Update the activity timestamp to keep the user flagged as active
+	user.LastActive = time.Now()
+	user.IsActive = true
 
 	checkAndArchiveExpiredSession()
 
@@ -707,7 +754,6 @@ func forceArchiveActiveSession() {
 	state.ActiveSetCode = ""
 }
 
-// tryFetchScryfallData checks if input matches an MTG set. Returns (Full Set Name, rawCode, true) or fallback.
 func tryFetchScryfallData(inputString string) (string, string, bool) {
 	cleanedCode := strings.TrimSpace(strings.ToLower(inputString))
 	if len(cleanedCode) < 3 || len(cleanedCode) > 5 {
@@ -802,7 +848,52 @@ func killSessionHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/master", http.StatusSeeOther)
 }
 
-func updateTicketsHandler(w http.ResponseWriter, r *http.Request) {
+func saveUserHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		return
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	username := strings.TrimSpace(r.FormValue("target_user"))
+	password := strings.TrimSpace(r.FormValue("password"))
+	ticketsRaw := strings.TrimSpace(r.FormValue("tickets"))
+
+	if username == "" || password == "" {
+		http.Redirect(w, r, "/master?error=Username+and+Password+cannot+be+empty", http.StatusSeeOther)
+		return
+	}
+	if username == "master" {
+		http.Redirect(w, r, "/master?error=Cannot+override+system+master+account", http.StatusSeeOther)
+		return
+	}
+
+	tickets := 0
+	if ticketsRaw != "" {
+		if val, err := strconv.Atoi(ticketsRaw); err == nil && val >= 0 {
+			tickets = val
+		}
+	}
+
+	// Preserve old parameters if updating an existing account
+	isActive := false
+	var lastActive time.Time
+	if existing, exists := state.Users[username]; exists {
+		isActive = existing.IsActive
+		lastActive = existing.LastActive
+	}
+
+	state.Users[username] = &User{
+		Password:   password,
+		Tickets:    tickets,
+		IsActive:   isActive,
+		LastActive: lastActive,
+	}
+
+	http.Redirect(w, r, "/master", http.StatusSeeOther)
+}
+
+func deleteUserHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		return
 	}
@@ -810,16 +901,7 @@ func updateTicketsHandler(w http.ResponseWriter, r *http.Request) {
 	defer state.mu.Unlock()
 
 	targetUser := r.FormValue("target_user")
-	amount, _ := strconv.Atoi(r.FormValue("amount"))
-
-	if _, exists := state.Users[targetUser]; !exists {
-		state.Users[targetUser] = &User{Password: "123", Tickets: 0}
-	}
-
-	state.Users[targetUser].Tickets += amount
-	if state.Users[targetUser].Tickets < 0 {
-		state.Users[targetUser].Tickets = 0
-	}
+	delete(state.Users, targetUser)
 
 	http.Redirect(w, r, "/master", http.StatusSeeOther)
 }
