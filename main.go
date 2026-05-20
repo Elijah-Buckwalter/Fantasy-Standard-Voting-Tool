@@ -164,8 +164,8 @@ var templates = template.Must(template.New("all").Parse(`
 
     <h3>Generate QR Code For Users</h3>
     <div style="margin-bottom: 20px;">
-        <button id="qr-portal-btn" style="background: #4A5568; color: white; padding: 10px 16px; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 0.95rem;">
-            📱 Generate Portal QR Code
+        <button id="qr-portal-btn" style="background: #4A5568; color: white; padding: 10px 16px; border: 3px solid #000000; border-radius: 0px; cursor: pointer; font-weight: bold; font-size: 0.95rem; box-shadow: 4px 4px 0px #000000;">
+            Generate Portal QR Code
         </button>
     </div>
 
@@ -173,11 +173,11 @@ var templates = template.Must(template.New("all").Parse(`
         document.getElementById('qr-portal-btn').addEventListener('click', function() {
             var targetUrl = 'https://unknotty-overstrong-atticus.ngrok-free.dev/'; 
             var qrApiUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' + encodeURIComponent(targetUrl);
-            var newTab = window.open();
-            newTab.document.write(
+            var varTab = window.open();
+            varTab.document.write(
                 '<!DOCTYPE html><html><head><title>Portal QR Code</title><meta name="viewport" content="width=device-width, initial-scale=1.0"><style>body { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; margin: 0; font-family: system-ui, -apple-system, sans-serif; background: #F7FAFC;} .qr-card { text-align: center; padding: 24px; background: white; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); border-radius: 8px;} img { max-width: 100%; height: auto; margin-bottom: 16px; display: block; } p { color: #2D3748; font-weight: 600; font-size: 1.1rem; margin: 0; word-break: break-all; }</style></head><body><div class="qr-card"><img src="' + qrApiUrl + '" alt="QR Code" width="300" height="300"><p>' + targetUrl + '</p></div></body></html>'
             );
-            newTab.document.close();
+            varTab.document.close();
         });
     </script>
     <hr>
@@ -251,6 +251,22 @@ var templates = template.Must(template.New("all").Parse(`
     <title>Voting Portal</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
+        :root {
+            --bg-body: #0f172a; --bg-card: #1e293b; --text-main: #e2e8f0;
+            --text-muted: #94a3b8; --border: #334155; --ticket-bg: #1e293b;
+            --card-scryfall: #1e293b; --search-border: purple;
+        }
+        :root.light-theme {
+            --bg-body: #ffffff; --bg-card: #ffffff; --text-main: #000000;
+            --text-muted: #4a5568; --border: #ccc; --ticket-bg: #eee;
+            --card-scryfall: #fafafa; --search-border: purple;
+        }
+        
+        body { background: var(--bg-body); color: var(--text-main); font-family: system-ui, sans-serif; padding: 20px; transition: background 0.2s, color 0.2s; }
+        
+        .header-container { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+        .toggle-btn { background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border); padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.85rem; font-weight: bold; }
+
         /* Animation Classes */
         .countdown-overlay {
             position: fixed;
@@ -283,6 +299,19 @@ var templates = template.Must(template.New("all").Parse(`
         }
     </style>
     <script>
+        function initTheme() {
+            const saved = localStorage.getItem('theme');
+            if (saved === 'light') {
+                document.documentElement.classList.add('light-theme');
+            }
+        }
+        function toggleTheme() {
+            const isLight = document.documentElement.classList.toggle('light-theme');
+            localStorage.setItem('theme', isLight ? 'light' : 'dark');
+            document.getElementById('theme-icon').innerText = isLight ? '🌙 Dark Mode' : '☀️ Light Mode';
+        }
+        initTheme();
+
         let globalTimeLeft = {{.TimeLeft}};
         let currentLoadedSetCode = "{{.ActiveSetCode}}";
         let debounceTimer;
@@ -312,7 +341,7 @@ var templates = template.Must(template.New("all").Parse(`
 
                             if (imgURL) {
                                 const cardDiv = document.createElement("div");
-                                cardDiv.style = "text-align: center; background: #fafafa; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px;";
+                                cardDiv.style = "text-align: center; background: var(--card-scryfall); border: 1px solid var(--border); border-radius: 6px; padding: 6px;";
                                 
                                 const img = document.createElement("img");
                                 img.src = imgURL;
@@ -320,7 +349,7 @@ var templates = template.Must(template.New("all").Parse(`
                                 img.style = "width: 100%; height: auto; border-radius: 4px; display: block; margin-bottom: 4px;";
                                 
                                 const span = document.createElement("span");
-                                span.style = "font-size: 0.75rem; font-weight: 600; color: #4a5568; display: block; word-break: break-all;";
+                                span.style = "font-size: 0.75rem; font-weight: 600; color: var(--text-muted); display: block; word-break: break-all;";
                                 span.innerText = card.name;
 
                                 cardDiv.appendChild(img);
@@ -372,7 +401,6 @@ var templates = template.Must(template.New("all").Parse(`
                 } else if (currentMode.startsWith("transition-")) {
                     if (timerEl) { timerEl.innerText = "Processing..."; timerEl.style.color = "purple"; }
                     if (animatedTimerEl) { 
-                        // Appends "Begin" to the last visual output if it's a pre-countdown configuration
                         if (currentMode === "transition-pre-talking" || currentMode === "transition-pre-voting") {
                             animatedTimerEl.innerText = "Begin";
                         } else {
@@ -445,16 +473,26 @@ var templates = template.Must(template.New("all").Parse(`
                 });
         }, 1000);
 
-        window.addEventListener("DOMContentLoaded", initSearchEngine);
+        window.addEventListener("DOMContentLoaded", () => {
+            initSearchEngine();
+            if (document.documentElement.classList.contains('light-theme')) {
+                document.getElementById('theme-icon').innerText = '🌙 Dark Mode';
+            }
+        });
     </script>
 </head>
 <body>
-    <h2>Welcome, {{.Username}}</h2>
-    <div style="background:#eee; padding:10px; display:inline-block;">
+    <div class="header-container">
+        <h2>Welcome, {{.Username}}</h2>
+        <div>
+            <button class="toggle-btn" onclick="toggleTheme()" id="theme-icon">☀️ Light Mode</button>
+        </div>
+    </div>
+    <div style="background: var(--ticket-bg); padding:10px; display:inline-block; border: 1px solid var(--border);">
         Your Current Ticket Count: <strong id="ticket-count" style="font-size:1.5em; color:blue;">{{.Tickets}}</strong>
     </div>
     {{if .Error}}<p style="color:red; font-weight:bold;">{{.Error}}</p>{{end}}
-    <hr>
+    <hr style="border: 0; border-top: 1px solid var(--border);">
     
     {{if .TransitionMode}}
         <div id="session-area" data-session-state="transition-{{.TransitionMode}}" data-time-left="{{.TimeLeft}}" data-set-code="{{.ActiveSetCode}}">
@@ -489,29 +527,44 @@ var templates = template.Must(template.New("all").Parse(`
             <h3>Active Session</h3>
             <p id="timer" style="font-size:1.2em; font-weight:bold; color:orange;">{{.TimeLeft}}s remaining</p>
             {{range $name, $sym := .Symbols}}
-                <div class="interactive-node" style="border:1px solid #ccc; padding:10px; margin-bottom:5px;">
-                    <strong>Symbol up for Vote: {{ $sym.Name }}</strong> 
-                    <br><br>
+                <!-- Blocky Node with Heavy Border -->
+                <div class="interactive-node" style="border: 3px solid #000000; padding: 10px; margin-bottom: 10px; background: var(--bg-card);">
+                    
+                    <!-- Inline Wrapper for Symbol Name and Threshold -->
+                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap;">
+                        <strong style="font-size: 1.1em; color: var(--text-main);">Symbol up for Vote: {{ $sym.Name }}</strong>
+                        
+                        <!-- Blocky Master Threshold Value Target Tag -->
+                        <span style="background: #000000; color: #FFFFFF; padding: 2px 8px; font-size: 0.85rem; font-weight: bold; text-transform: uppercase; border-radius: 0px;">
+                            Target: {{ $sym.Target }}
+                        </span>
+                    </div>
+
                     {{if $sym.Reached}}
-                        <button disabled style="color:red;">Threshold Closed</button>
+                        <button disabled style="color: red; background: transparent; border: 2px dashed red; padding: 5px 15px; font-weight: bold; cursor: not-allowed;">
+                            Threshold Closed
+                        </button>
                     {{else}}
                         <form action="/client/vote" method="POST" style="display:inline;">
                             <input type="hidden" name="username" value="{{$.Username}}">
                             <input type="hidden" name="symbol" value="{{$sym.Name}}">
-                            <button type="submit" style="background:green; color:white; padding:5px 15px;">Use 1 Ticket to Vote</button>
+                            <!-- Blocky, sharp voting button -->
+                            <button type="submit" style="background: green; color: white; padding: 5px 15px; border: 3px solid #000000; border-radius: 0px; font-weight: bold; cursor: pointer;">
+                                Use 1 Ticket to Vote
+                            </button>
                         </form>
                     {{end}}
                 </div>
             {{end}}
 
             {{if .ActiveSetCode}}
-                <div style="margin-top:20px; border-top: 2px solid #ccc; padding-top: 15px;">
+                <div style="margin-top:20px; border-top: 2px solid var(--border); padding-top: 15px;">
                     <h4 style="color: purple; margin-bottom: 8px;">🃏 Filter Live Set Content:</h4>
                     <input type="text" id="scryfall-search-input" value="s:{{.ActiveSetCode}} " 
                            oninput="handleSearchInput(this.value)"
-                           style="width: 100%; max-width: 500px; padding: 10px; font-size: 1rem; border: 2px solid purple; border-radius: 4px; box-sizing: border-box;" 
+                           style="width: 100%; max-width: 500px; padding: 10px; font-size: 1rem; border: 2px solid var(--search-border); background: var(--bg-card); color: var(--text-main); border-radius: 4px; box-sizing: border-box;" 
                            placeholder="Filter e.g. s:{{.ActiveSetCode}} c:red r:rare">
-                    <p id="scryfall-status" style="font-size: 0.85rem; font-weight: bold; color: #555; margin: 6px 0 12px 0;">Initializing...</p>
+                    <p id="scryfall-status" style="font-size: 0.85rem; font-weight: bold; color: var(--text-muted); margin: 6px 0 12px 0;">Initializing...</p>
                     <div id="scryfall-live-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px;"></div>
                 </div>
             {{end}}
@@ -521,20 +574,20 @@ var templates = template.Must(template.New("all").Parse(`
             <h3>Active Session</h3>
             <p id="timer" style="font-size:1.2em; font-weight:bold; color:orange;">{{.TimeLeft}}s remaining</p>
             {{range $name, $sym := .Symbols}}
-                <div class="interactive-node" style="border:1px solid blue; background: #eef5ff; padding:15px; margin-bottom:5px; border-radius:5px;">
+                <div class="interactive-node" style="border:1px solid blue; background: var(--card-scryfall); padding:15px; margin-bottom:5px; border-radius:5px;">
                     <strong style="font-size: 1.3em;">Currently Discussing: {{ $sym.Name }}</strong> 
-                    <p style="color: #555; margin-bottom:0;">🗣️ Talking session is open. No tickets required, voting is disabled.</p>
+                    <p style="color: var(--text-muted); margin-bottom:0;">🗣️ Talking session is open. No tickets required, voting is disabled.</p>
                 </div>
             {{end}}
 
             {{if .ActiveSetCode}}
-                <div style="margin-top:20px; border-top: 2px solid #ccc; padding-top: 15px;">
+                <div style="margin-top:20px; border-top: 2px solid var(--border); padding-top: 15px;">
                     <h4 style="color: purple; margin-bottom: 8px;">🃏 Filter Live Set Content:</h4>
                     <input type="text" id="scryfall-search-input" value="s:{{.ActiveSetCode}} " 
                            oninput="handleSearchInput(this.value)"
-                           style="width: 100%; max-width: 500px; padding: 10px; font-size: 1rem; border: 2px solid purple; border-radius: 4px; box-sizing: border-box;" 
+                           style="width: 100%; max-width: 500px; padding: 10px; font-size: 1rem; border: 2px solid var(--search-border); background: var(--bg-card); color: var(--text-main); border-radius: 4px; box-sizing: border-box;" 
                            placeholder="Filter e.g. s:{{.ActiveSetCode}} c:red r:rare">
-                    <p id="scryfall-status" style="font-size: 0.85rem; font-weight: bold; color: #555; margin: 6px 0 12px 0;">Initializing...</p>
+                    <p id="scryfall-status" style="font-size: 0.85rem; font-weight: bold; color: var(--text-muted); margin: 6px 0 12px 0;">Initializing...</p>
                     <div id="scryfall-live-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px;"></div>
                 </div>
             {{end}}
