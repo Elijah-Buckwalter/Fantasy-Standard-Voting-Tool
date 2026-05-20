@@ -48,6 +48,10 @@ type ServerState struct {
 	TalkingActive bool
 	ActiveSymName string
 	ActiveSetCode string // Tracks the raw code (e.g. "neo") if it's an MTG Set
+
+	// --- Custom Between-States Fields ---
+	TransitionMode string    // "pre-talking", "pre-voting", "post-voting-success", "post-voting-fail", "terminated", "post-talking"
+	TransitionEnd  time.Time // Pinpoint expiration for countdowns / results panels
 }
 
 var state = &ServerState{
@@ -197,7 +201,9 @@ var templates = template.Must(template.New("all").Parse(`
 
     <h3>Live Sessions Status</h3>
     <div id="live-sessions">
-        {{if .VotingActive}}
+        {{if .TransitionMode}}
+             <p>Transition Running: <strong style="color: purple;">{{.TransitionMode}}</strong> | Time Remaining: <strong>{{.TimeLeft}}s</strong></p>
+        {{else if .VotingActive}}
             {{range $name, $sym := .Symbols}}
                 <p>
                     Mode: <strong style="color:green;">VOTING</strong> | 
@@ -244,6 +250,38 @@ var templates = template.Must(template.New("all").Parse(`
 <head>
     <title>Voting Portal</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        /* Animation Classes */
+        .countdown-overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100vw; height: 100vh;
+            background: rgba(10, 15, 30, 0.95);
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            z-index: 9999; color: white; text-align: center;
+            font-family: system-ui, sans-serif;
+            backdrop-filter: blur(8px);
+        }
+        .animate-pop {
+            font-size: 5rem;
+            font-weight: 900;
+            margin: 20px 0;
+            animation: pulseImpact 1s ease-out infinite;
+        }
+        .sub-header {
+            font-size: 1.5rem;
+            opacity: 0.8;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+        }
+        @keyframes pulseImpact {
+            0% { transform: scale(0.6); opacity: 0; }
+            15% { transform: scale(1.1); opacity: 1; }
+            30% { transform: scale(1.0); }
+            80% { transform: scale(1.0); opacity: 1; }
+            100% { transform: scale(1.4); opacity: 0; }
+        }
+    </style>
     <script>
         let globalTimeLeft = {{.TimeLeft}};
         let currentLoadedSetCode = "{{.ActiveSetCode}}";
@@ -314,25 +352,35 @@ var templates = template.Must(template.New("all").Parse(`
 
         setInterval(() => {
             let timerEl = document.getElementById("timer");
-            if (!timerEl) return;
-
+            let animatedTimerEl = document.getElementById("animated-timer");
             let sessionArea = document.getElementById("session-area");
             let currentMode = sessionArea ? sessionArea.getAttribute("data-session-state") : "none";
 
             if (globalTimeLeft > 0) {
-                timerEl.innerText = globalTimeLeft + "s remaining";
-                timerEl.style.color = "orange";
+                if (currentMode.startsWith("transition-")) {
+                     if (timerEl) { timerEl.innerText = "Updating State..."; timerEl.style.color = "purple"; }
+                     if (animatedTimerEl) { animatedTimerEl.innerText = globalTimeLeft + "s"; }
+                } else {
+                     if (timerEl) { timerEl.innerText = globalTimeLeft + "s remaining"; timerEl.style.color = "orange"; }
+                }
                 globalTimeLeft--;
             } else {
                 if (currentMode === "voting") {
-                    timerEl.innerText = "Voting Closed";
-                    timerEl.style.color = "orange";
+                    if (timerEl) { timerEl.innerText = "Voting Closed"; timerEl.style.color = "orange"; }
                 } else if (currentMode === "talking") {
-                    timerEl.innerText = "Session Closed";
-                    timerEl.style.color = "orange";
+                    if (timerEl) { timerEl.innerText = "Session Closed"; timerEl.style.color = "orange"; }
+                } else if (currentMode.startsWith("transition-")) {
+                    if (timerEl) { timerEl.innerText = "Processing..."; timerEl.style.color = "purple"; }
+                    if (animatedTimerEl) { 
+                        // Appends "Begin" to the last visual output if it's a pre-countdown configuration
+                        if (currentMode === "transition-pre-talking" || currentMode === "transition-pre-voting") {
+                            animatedTimerEl.innerText = "Begin";
+                        } else {
+                            animatedTimerEl.innerText = "0s";
+                        }
+                    }
                 } else {
-                    timerEl.innerText = "No Session Active";
-                    timerEl.style.color = "red";
+                    if (timerEl) { timerEl.innerText = "No Session Active"; timerEl.style.color = "red"; }
                 }
             }
         }, 1000);
@@ -340,8 +388,7 @@ var templates = template.Must(template.New("all").Parse(`
         setInterval(() => {
             fetch('/client?username={{.Username}}&ajax=true')
                 .then(response => {
-                    // If the server rejects the heartbeat (e.g. session stolen or invalidated), boot them
-                    if (response.status === http.StatusUnauthorized || response.redirected) {
+                    if (response.status === 401 || response.redirected) {
                         window.location.href = "/?error=Session+disconnected";
                         return;
                     }
@@ -409,7 +456,35 @@ var templates = template.Must(template.New("all").Parse(`
     {{if .Error}}<p style="color:red; font-weight:bold;">{{.Error}}</p>{{end}}
     <hr>
     
-    {{if .VotingActive}}
+    {{if .TransitionMode}}
+        <div id="session-area" data-session-state="transition-{{.TransitionMode}}" data-time-left="{{.TimeLeft}}" data-set-code="{{.ActiveSetCode}}">
+             <div class="countdown-overlay">
+                 {{if eq .TransitionMode "pre-talking"}}
+                     <div class="sub-header" style="color: #63b3ed;">Discussion Session Approaching.</div>
+                     <div id="animated-timer" class="animate-pop" style="color: #3182ce;">{{if eq .TimeLeft 0}}Begin{{else}}{{.TimeLeft}}s{{end}}</div>
+                 {{else if eq .TransitionMode "pre-voting"}}
+                     <div class="sub-header" style="color: #68d391;">Let the People's Tickets Be Heard!</div>
+                     <div id="animated-timer" class="animate-pop" style="color: #38a169;">{{if eq .TimeLeft 0}}Begin{{else}}{{.TimeLeft}}s{{end}}</div>
+                 {{else if eq .TransitionMode "post-voting-success"}}
+                     <div class="sub-header" style="color: #fc8181;">Threshold Cleared</div>
+                     <h1 style="margin:10px 0; font-size:2.5rem; max-width:80%; color:#e53e3e;">The Threshold Was Met, The Set Will Be Rerolled!</h1>
+                     <div id="animated-timer" class="animate-pop" style="color: #e53e3e; font-size:3rem;">🛞</div>
+                 {{else if eq .TransitionMode "post-voting-fail"}}
+                     <div class="sub-header" style="color: #cbd5e0;">Time Expired</div>
+                     <h1 style="margin:10px 0; font-size:2.5rem; max-width:80%; color:#a0aec0;">The Threshold Was Not Met, The Set Will Be Locked In.</h1>
+                     <div id="animated-timer" class="animate-pop" style="color: #718096; font-size:3rem;">🔒</div>
+                 {{else if eq .TransitionMode "terminated"}}
+                     <div class="sub-header" style="color: #e53e3e;">System Alert</div>
+                     <h1 style="margin:10px 0; font-size:2.5rem; max-width:80%; color:#fff;">Session Terminated Please Stand By.</h1>
+                     <div id="animated-timer" class="animate-pop" style="color: #e53e3e; font-size:3rem;">🛑</div>
+                 {{else if eq .TransitionMode "post-talking"}}
+                     <div class="sub-header" style="color: #ed8936;">Discussion Closed</div>
+                     <h1 style="margin:10px 0; font-size:2.5rem; max-width:80%; color:#edf2f7;">Times Up! Please Remain Quiet and Follow the Orators Instructions.</h1>
+                     <div id="animated-timer" class="animate-pop" style="color: #ed8936; font-size:3rem;">⏳</div>
+                 {{end}}
+             </div>
+        </div>
+    {{else if .VotingActive}}
         <div id="session-area" data-session-state="voting" data-time-left="{{.TimeLeft}}" data-set-code="{{.ActiveSetCode}}">
             <h3>Active Session</h3>
             <p id="timer" style="font-size:1.2em; font-weight:bold; color:orange;">{{.TimeLeft}}s remaining</p>
@@ -480,12 +555,10 @@ func main() {
 	state.Users["user1"] = &User{Password: "password123", Tickets: 10}
 	state.Users["user2"] = &User{Password: "password456", Tickets: 5}
 
-	// Dynamic system watch loop running inside separate routine
 	go func() {
 		for {
 			time.Sleep(2 * time.Second)
 			state.mu.Lock()
-			// Scan client accounts to automatically prune dead links
 			for _, user := range state.Users {
 				if user.IsActive && time.Since(user.LastActive) > 5*time.Second {
 					user.IsActive = false
@@ -534,14 +607,12 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 
 		if exists && user != nil {
 			if subtle.ConstantTimeCompare([]byte(user.Password), []byte(password)) == 1 {
-				// Block authentication if another context is already occupying the account structure
 				if user.IsActive && time.Since(user.LastActive) <= 5*time.Second {
 					state.mu.Unlock()
 					http.Redirect(w, r, "/?error=This+account+is+already+logged+in+elsewhere.", http.StatusSeeOther)
 					return
 				}
 
-				// Take ownership of the session slot
 				user.IsActive = true
 				user.LastActive = time.Now()
 				state.mu.Unlock()
@@ -556,7 +627,26 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func checkAndArchiveExpiredSession() {
-	if (state.VotingActive || state.TalkingActive) && time.Now().After(state.TimerEnd) {
+	now := time.Now()
+
+	if state.TransitionMode != "" && now.After(state.TransitionEnd) {
+		oldMode := state.TransitionMode
+		state.TransitionMode = "" 
+
+		if oldMode == "pre-talking" {
+			state.TalkingActive = true
+		} else if oldMode == "pre-voting" {
+			state.VotingActive = true
+		} else {
+			state.VotingActive = false
+			state.TalkingActive = false
+			state.Symbols = make(map[string]*Symbol)
+			state.ActiveSetCode = ""
+		}
+		return
+	}
+
+	if (state.VotingActive || state.TalkingActive) && now.After(state.TimerEnd) {
 		modeName := "TALKING"
 		detailText := "Discussion completed cleanly"
 		symbolName := ""
@@ -571,23 +661,32 @@ func checkAndArchiveExpiredSession() {
 					detailText += " [Threshold Met]"
 				}
 			}
+
+			state.TransitionMode = "post-voting-fail"
+			state.TransitionEnd = now.Add(5 * time.Second) 
+			state.TimerEnd = state.TransitionEnd
 		} else if state.TalkingActive {
 			for _, sym := range state.Symbols {
 				symbolName = sym.Name
 			}
+			
+			// Trigger talking session expiration transition screen
+			state.TransitionMode = "post-talking"
+			state.TransitionEnd = now.Add(5 * time.Second)
+			state.TimerEnd = state.TransitionEnd
 		}
 
 		state.History = append([]HistoricalSession{{
 			Mode:         modeName,
 			Symbol:       symbolName,
 			FinalTallies: detailText,
-			Timestamp:    time.Now().Format("15:04:05"),
+			Timestamp:    now.Format("15:04:05"),
 		}}, state.History...)
 
-		state.VotingActive = false
-		state.TalkingActive = false
-		state.Symbols = make(map[string]*Symbol)
-		state.ActiveSetCode = ""
+		if state.TransitionMode == "" {
+			state.VotingActive = false
+			state.TalkingActive = false
+		}
 	}
 }
 
@@ -597,29 +696,36 @@ func masterDashboardHandler(w http.ResponseWriter, r *http.Request) {
 
 	checkAndArchiveExpiredSession()
 
-	timeLeft := int(time.Until(state.TimerEnd).Seconds())
+	var timeLeft int
+	if state.TransitionMode != "" {
+		timeLeft = int(time.Until(state.TransitionEnd).Seconds())
+	} else {
+		timeLeft = int(time.Until(state.TimerEnd).Seconds())
+	}
 	if timeLeft <= 0 {
 		timeLeft = 0
 	}
 
 	data := struct {
-		Users         map[string]*User
-		Symbols       map[string]*Symbol
-		History       []HistoricalSession
-		VotingActive  bool
-		TalkingActive bool
-		ActiveSetCode string
-		TimeLeft      int
-		Error         string
+		Users          map[string]*User
+		Symbols        map[string]*Symbol
+		History        []HistoricalSession
+		VotingActive   bool
+		TalkingActive  bool
+		ActiveSetCode  string
+		TimeLeft       int
+		Error          string
+		TransitionMode string
 	}{
-		Users:         state.Users,
-		Symbols:       state.Symbols,
-		History:       state.History,
-		VotingActive:  state.VotingActive,
-		TalkingActive: state.TalkingActive,
-		ActiveSetCode: state.ActiveSetCode,
-		TimeLeft:      timeLeft,
-		Error:         r.URL.Query().Get("error"),
+		Users:          state.Users,
+		Symbols:        state.Symbols,
+		History:        state.History,
+		VotingActive:   state.VotingActive,
+		TalkingActive:  state.TalkingActive,
+		ActiveSetCode:  state.ActiveSetCode,
+		TimeLeft:       timeLeft,
+		Error:          r.URL.Query().Get("error"),
+		TransitionMode: state.TransitionMode,
 	}
 
 	templates.ExecuteTemplate(w, "master", data)
@@ -636,35 +742,41 @@ func clientDashboardHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update the activity timestamp to keep the user flagged as active
 	user.LastActive = time.Now()
 	user.IsActive = true
 
 	checkAndArchiveExpiredSession()
 
-	timeLeft := int(time.Until(state.TimerEnd).Seconds())
+	var timeLeft int
+	if state.TransitionMode != "" {
+		timeLeft = int(time.Until(state.TransitionEnd).Seconds())
+	} else {
+		timeLeft = int(time.Until(state.TimerEnd).Seconds())
+	}
 	if timeLeft <= 0 {
 		timeLeft = 0
 	}
 
 	data := struct {
-		Username      string
-		Tickets       int
-		Symbols       map[string]*Symbol
-		VotingActive  bool
-		TalkingActive bool
-		ActiveSetCode string
-		TimeLeft      int
-		Error         string
+		Username       string
+		Tickets        int
+		Symbols        map[string]*Symbol
+		VotingActive   bool
+		TalkingActive  bool
+		ActiveSetCode  string
+		TimeLeft       int
+		Error          string
+		TransitionMode string
 	}{
-		Username:      username,
-		Tickets:       user.Tickets,
-		Symbols:       state.Symbols,
-		VotingActive:  state.VotingActive,
-		TalkingActive: state.TalkingActive,
-		ActiveSetCode: state.ActiveSetCode,
-		TimeLeft:      timeLeft,
-		Error:         r.URL.Query().Get("error"),
+		Username:       username,
+		Tickets:        user.Tickets,
+		Symbols:        state.Symbols,
+		VotingActive:   state.VotingActive,
+		TalkingActive:  state.TalkingActive,
+		ActiveSetCode:  state.ActiveSetCode,
+		TimeLeft:       timeLeft,
+		Error:          r.URL.Query().Get("error"),
+		TransitionMode: state.TransitionMode,
 	}
 	state.mu.Unlock()
 
@@ -688,7 +800,7 @@ func voteHandler(w http.ResponseWriter, r *http.Request) {
 	user, userExists := state.Users[username]
 	symbol, symbolExists := state.Symbols[symbolName]
 
-	if !userExists || !symbolExists || !state.VotingActive {
+	if !userExists || !symbolExists || !state.VotingActive || state.TransitionMode != "" {
 		http.Redirect(w, r, "/client?username="+username+"&error=Voting+is+inactive", http.StatusSeeOther)
 		return
 	}
@@ -714,9 +826,11 @@ func voteHandler(w http.ResponseWriter, r *http.Request) {
 			FinalTallies: fmt.Sprintf("Threshold Met Early! Total Votes: %d (Target: %d)", symbol.Votes, symbol.Target),
 			Timestamp:    time.Now().Format("15:04:05"),
 		}}, state.History...)
+		
 		state.VotingActive = false
-		state.Symbols = make(map[string]*Symbol)
-		state.ActiveSetCode = ""
+		state.TransitionMode = "post-voting-success"
+		state.TransitionEnd = time.Now().Add(5 * time.Second) 
+		state.TimerEnd = state.TransitionEnd
 	}
 
 	http.Redirect(w, r, "/client?username="+username, http.StatusSeeOther)
@@ -750,6 +864,12 @@ func forceArchiveActiveSession() {
 	
 	state.VotingActive = false
 	state.TalkingActive = false
+	
+	// Trigger the "Session Terminated" overlay state for exactly 5 seconds
+	state.TransitionMode = "terminated" 
+	state.TransitionEnd = time.Now().Add(5 * time.Second)
+	state.TimerEnd = state.TransitionEnd
+	
 	state.Symbols = make(map[string]*Symbol)
 	state.ActiveSetCode = ""
 }
@@ -804,8 +924,9 @@ func startVotingHandler(w http.ResponseWriter, r *http.Request) {
 		state.Symbols[rawInput] = &Symbol{Name: rawInput, Votes: 0, Target: target}
 	}
 
-	state.TimerEnd = time.Now().Add(time.Duration(durationSec) * time.Second)
-	state.VotingActive = true
+	state.TransitionMode = "pre-voting"
+	state.TransitionEnd = time.Now().Add(3 * time.Second)
+	state.TimerEnd = state.TransitionEnd.Add(time.Duration(durationSec) * time.Second)
 
 	http.Redirect(w, r, "/master", http.StatusSeeOther)
 }
@@ -830,8 +951,9 @@ func startTalkingHandler(w http.ResponseWriter, r *http.Request) {
 		state.Symbols[rawInput] = &Symbol{Name: rawInput, Votes: 0, Target: 0}
 	}
 
-	state.TimerEnd = time.Now().Add(time.Duration(durationSec) * time.Second)
-	state.TalkingActive = true
+	state.TransitionMode = "pre-talking"
+	state.TransitionEnd = time.Now().Add(3 * time.Second)
+	state.TimerEnd = state.TransitionEnd.Add(time.Duration(durationSec) * time.Second)
 
 	http.Redirect(w, r, "/master", http.StatusSeeOther)
 }
@@ -875,7 +997,6 @@ func saveUserHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Preserve old parameters if updating an existing account
 	isActive := false
 	var lastActive time.Time
 	if existing, exists := state.Users[username]; exists {
