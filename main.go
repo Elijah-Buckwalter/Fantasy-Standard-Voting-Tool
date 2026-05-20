@@ -34,12 +34,6 @@ type HistoricalSession struct {
 	Timestamp    string
 }
 
-// ScryfallCard represents the subset of card data we care about displaying
-type ScryfallCard struct {
-	Name     string `json:"name"`
-	ImageURL string `json:"image_url"`
-}
-
 // ServerState is our single source of truth in memory
 type ServerState struct {
 	mu            sync.Mutex
@@ -51,9 +45,7 @@ type ServerState struct {
 	VotingActive  bool
 	TalkingActive bool
 	ActiveSymName string
-
-	// Ambient Card Data populated only if the active symbol is an MTG Set Code
-	CurrentCards []ScryfallCard
+	ActiveSetCode string // Tracks the raw code (e.g. "neo") if it's an MTG Set
 }
 
 var state = &ServerState{
@@ -194,7 +186,7 @@ var templates = template.Must(template.New("all").Parse(`
                     Timer: <span class="live-countdown" style="font-weight:bold; color:orange;">{{$.TimeLeft}}s remaining</span> | 
                     Status: {{if $sym.Reached}}<strong style="color:red;">❌ Threshold Closed Early</strong>{{else}}<strong>⏳ Open</strong>{{end}} |
                     Progress: [{{$sym.Votes}} / {{$sym.Target}}]
-                    {{if $.CurrentCards}}<span style="color: purple; font-weight: bold; margin-left:10px;">🃏 (MTG Card Grid Overlay Active)</span>{{end}}
+                    {{if $.ActiveSetCode}}<span style="color: purple; font-weight: bold; margin-left:10px;">🃏 (User-driven Scryfall Query Active: s:{{$.ActiveSetCode}})</span>{{end}}
                 </p>
             {{end}}
         {{else if .TalkingActive}}
@@ -204,7 +196,7 @@ var templates = template.Must(template.New("all").Parse(`
                     Topic/Set: <strong>{{$sym.Name}}</strong> | 
                     Timer: <span class="live-countdown" style="font-weight:bold; color:orange;">{{$.TimeLeft}}s remaining</span> | 
                     Status: 🗣️ Discussion Active
-                    {{if $.CurrentCards}}<span style="color: purple; font-weight: bold; margin-left:10px;">🃏 (MTG Card Grid Overlay Active)</span>{{end}}
+                    {{if $.ActiveSetCode}}<span style="color: purple; font-weight: bold; margin-left:10px;">🃏 (User-driven Scryfall Query Active: s:{{$.ActiveSetCode}})</span>{{end}}
                 </p>
             {{end}}
         {{else}}
@@ -235,6 +227,75 @@ var templates = template.Must(template.New("all").Parse(`
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <script>
         let globalTimeLeft = {{.TimeLeft}};
+        let currentLoadedSetCode = "{{.ActiveSetCode}}";
+        let debounceTimer;
+
+        // Triggers the Scryfall search directly from the client's browser
+        function fetchScryfallData(query) {
+            const grid = document.getElementById("scryfall-live-grid");
+            const statusText = document.getElementById("scryfall-status");
+            if (!grid || !query.trim()) return;
+
+            statusText.innerText = "Searching Scryfall...";
+
+            fetch("https://api.scryfall.com/cards/search?q=" + encodeURIComponent(query))
+                .then(res => {
+                    if (!res.ok) throw new Error("No cards found or bad syntax");
+                    return res.json();
+                })
+                .then(resData => {
+                    statusText.innerText = "Showing matches for: " + query;
+                    grid.innerHTML = ""; // Wipe clean
+
+                    if (resData.data && resData.data.length > 0) {
+                        resData.data.forEach(card => {
+                            let imgURL = card.image_uris ? card.image_uris.normal : null;
+                            if (!imgURL && card.card_faces && card.card_faces.length > 0) {
+                                imgURL = card.card_faces[0].image_uris ? card.card_faces[0].image_uris.normal : null;
+                            }
+
+                            if (imgURL) {
+                                const cardDiv = document.createElement("div");
+                                cardDiv.style = "text-align: center; background: #fafafa; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px;";
+                                
+                                const img = document.createElement("img");
+                                img.src = imgURL;
+                                img.alt = card.name;
+                                img.style = "width: 100%; height: auto; border-radius: 4px; display: block; margin-bottom: 4px;";
+                                
+                                const span = document.createElement("span");
+                                span.style = "font-size: 0.75rem; font-weight: 600; color: #4a5568; display: block; word-break: break-all;";
+                                span.innerText = card.name;
+
+                                cardDiv.appendChild(img);
+                                cardDiv.appendChild(span);
+                                grid.appendChild(cardDiv);
+                            }
+                        });
+                    }
+                })
+                .catch(err => {
+                    statusText.innerText = "No matching cards found inside Scryfall context.";
+                    grid.innerHTML = "";
+                });
+        }
+
+        // Debounce wrapper prevents flooding Scryfall API on every keypress
+        function handleSearchInput(val) {
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => {
+                fetchScryfallData(val);
+            }, 450); 
+        }
+
+        // Initialize search field execution once page DOM maps out
+        function initSearchEngine() {
+            const searchBar = document.getElementById("scryfall-search-input");
+            if (searchBar) {
+                // Pre-fetch defaults instantly using the anchored configuration
+                fetchScryfallData(searchBar.value);
+            }
+        }
 
         setInterval(() => {
             let timerEl = document.getElementById("timer");
@@ -289,12 +350,20 @@ var templates = template.Must(template.New("all").Parse(`
                             }
                         }
 
-                        if (currentMode !== newMode) {
+                        let newSetCode = newSessionArea.getAttribute("data-set-code");
+
+                        // Complete UI Swap only if session mode changed or a totally different MTG Set was chosen
+                        if (currentMode !== newMode || currentLoadedSetCode !== newSetCode) {
+                            currentLoadedSetCode = newSetCode;
                             currentSessionArea.setAttribute("data-session-state", newMode);
+                            currentSessionArea.setAttribute("data-set-code", newSetCode);
                             currentSessionArea.innerHTML = newSessionArea.innerHTML;
                             currentSessionArea.setAttribute("data-time-left", serverTimeRaw);
+                            
+                            // Re-init the dynamic search pipeline for the brand new search context
+                            setTimeout(initSearchEngine, 50);
                         } else {
-                            // Sync operational pieces
+                            // Keep basic interaction blocks synced cleanly
                             let currentForms = currentSessionArea.querySelectorAll(".interactive-node");
                             let newForms = newSessionArea.querySelectorAll(".interactive-node");
                             if (currentForms.length === newForms.length) {
@@ -304,16 +373,12 @@ var templates = template.Must(template.New("all").Parse(`
                                     }
                                 }
                             }
-                            // Also keep images synced seamlessly if there was a slight backend payload adjustment
-                            let currentGallery = currentSessionArea.querySelector(".card-gallery-grid");
-                            let newGallery = newSessionArea.querySelector(".card-gallery-grid");
-                            if (currentGallery && newGallery && currentGallery.innerHTML !== newGallery.innerHTML) {
-                                currentGallery.innerHTML = newGallery.innerHTML;
-                            }
                         }
                     }
                 });
         }, 1000);
+
+        window.addEventListener("DOMContentLoaded", initSearchEngine);
     </script>
 </head>
 <body>
@@ -325,7 +390,7 @@ var templates = template.Must(template.New("all").Parse(`
     <hr>
     
     {{if .VotingActive}}
-        <div id="session-area" data-session-state="voting" data-time-left="{{.TimeLeft}}">
+        <div id="session-area" data-session-state="voting" data-time-left="{{.TimeLeft}}" data-set-code="{{.ActiveSetCode}}">
             <h3>Active Session</h3>
             <p id="timer" style="font-size:1.2em; font-weight:bold; color:orange;">{{.TimeLeft}}s remaining</p>
             {{range $name, $sym := .Symbols}}
@@ -344,21 +409,21 @@ var templates = template.Must(template.New("all").Parse(`
                 </div>
             {{end}}
 
-            {{/* Embedded Card Injector */}}
-            {{if .CurrentCards}}
-                <h4 style="color: purple; margin-top:20px; border-top: 2px solid #ccc; padding-top: 15px;">🃏 Associated Magic Cards for Reference:</h4>
-                <div class="card-gallery-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px;">
-                    {{range .CurrentCards}}
-                        <div style="text-align: center; background: #fafafa; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px;">
-                            <img src="{{.ImageURL}}" alt="{{.Name}}" style="width: 100%; height: auto; border-radius: 4px; display: block; margin-bottom: 4px;">
-                            <span style="font-size: 0.75rem; font-weight: 600; color: #4a5568; display: block; word-break: break-all;">{{.Name}}</span>
-                        </div>
-                    {{end}}
+            {{/* Client-Side Live Search Engine Component */}}
+            {{if .ActiveSetCode}}
+                <div style="margin-top:20px; border-top: 2px solid #ccc; padding-top: 15px;">
+                    <h4 style="color: purple; margin-bottom: 8px;">🃏 Filter Live Set Content:</h4>
+                    <input type="text" id="scryfall-search-input" value="s:{{.ActiveSetCode}} " 
+                           oninput="handleSearchInput(this.value)"
+                           style="width: 100%; max-width: 500px; padding: 10px; font-size: 1rem; border: 2px solid purple; border-radius: 4px; box-sizing: border-box;" 
+                           placeholder="Filter e.g. s:{{.ActiveSetCode}} c:red r:rare">
+                    <p id="scryfall-status" style="font-size: 0.85rem; font-weight: bold; color: #555; margin: 6px 0 12px 0;">Initializing...</p>
+                    <div id="scryfall-live-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px;"></div>
                 </div>
             {{end}}
         </div>
     {{else if .TalkingActive}}
-        <div id="session-area" data-session-state="talking" data-time-left="{{.TimeLeft}}">
+        <div id="session-area" data-session-state="talking" data-time-left="{{.TimeLeft}}" data-set-code="{{.ActiveSetCode}}">
             <h3>Active Session</h3>
             <p id="timer" style="font-size:1.2em; font-weight:bold; color:orange;">{{.TimeLeft}}s remaining</p>
             {{range $name, $sym := .Symbols}}
@@ -368,21 +433,21 @@ var templates = template.Must(template.New("all").Parse(`
                 </div>
             {{end}}
 
-            {{/* Embedded Card Injector */}}
-            {{if .CurrentCards}}
-                <h4 style="color: purple; margin-top:20px; border-top: 2px solid #ccc; padding-top: 15px;">🃏 Associated Magic Cards for Reference:</h4>
-                <div class="card-gallery-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px;">
-                    {{range .CurrentCards}}
-                        <div style="text-align: center; background: #fafafa; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px;">
-                            <img src="{{.ImageURL}}" alt="{{.Name}}" style="width: 100%; height: auto; border-radius: 4px; display: block; margin-bottom: 4px;">
-                            <span style="font-size: 0.75rem; font-weight: 600; color: #4a5568; display: block; word-break: break-all;">{{.Name}}</span>
-                        </div>
-                    {{end}}
+            {{/* Client-Side Live Search Engine Component */}}
+            {{if .ActiveSetCode}}
+                <div style="margin-top:20px; border-top: 2px solid #ccc; padding-top: 15px;">
+                    <h4 style="color: purple; margin-bottom: 8px;">🃏 Filter Live Set Content:</h4>
+                    <input type="text" id="scryfall-search-input" value="s:{{.ActiveSetCode}} " 
+                           oninput="handleSearchInput(this.value)"
+                           style="width: 100%; max-width: 500px; padding: 10px; font-size: 1rem; border: 2px solid purple; border-radius: 4px; box-sizing: border-box;" 
+                           placeholder="Filter e.g. s:{{.ActiveSetCode}} c:red r:rare">
+                    <p id="scryfall-status" style="font-size: 0.85rem; font-weight: bold; color: #555; margin: 6px 0 12px 0;">Initializing...</p>
+                    <div id="scryfall-live-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px;"></div>
                 </div>
             {{end}}
         </div>
     {{else}}
-        <div id="session-area" data-session-state="none" data-time-left="0">
+        <div id="session-area" data-session-state="none" data-time-left="0" data-set-code="">
             <h3>Active Session</h3>
             <p id="timer" style="font-size:1.2em; font-weight:bold; color:red;">No Session Active</p>
             <p>No active voting or talking session at this moment.</p>
@@ -475,7 +540,7 @@ func checkAndArchiveExpiredSession() {
 		state.VotingActive = false
 		state.TalkingActive = false
 		state.Symbols = make(map[string]*Symbol)
-		state.CurrentCards = nil
+		state.ActiveSetCode = ""
 	}
 }
 
@@ -496,7 +561,7 @@ func masterDashboardHandler(w http.ResponseWriter, r *http.Request) {
 		History       []HistoricalSession
 		VotingActive  bool
 		TalkingActive bool
-		CurrentCards  []ScryfallCard
+		ActiveSetCode string
 		TimeLeft      int
 		Error         string
 	}{
@@ -505,7 +570,7 @@ func masterDashboardHandler(w http.ResponseWriter, r *http.Request) {
 		History:       state.History,
 		VotingActive:  state.VotingActive,
 		TalkingActive: state.TalkingActive,
-		CurrentCards:  state.CurrentCards,
+		ActiveSetCode: state.ActiveSetCode,
 		TimeLeft:      timeLeft,
 		Error:         r.URL.Query().Get("error"),
 	}
@@ -537,7 +602,7 @@ func clientDashboardHandler(w http.ResponseWriter, r *http.Request) {
 		Symbols       map[string]*Symbol
 		VotingActive  bool
 		TalkingActive bool
-		CurrentCards  []ScryfallCard
+		ActiveSetCode string
 		TimeLeft      int
 		Error         string
 	}{
@@ -546,7 +611,7 @@ func clientDashboardHandler(w http.ResponseWriter, r *http.Request) {
 		Symbols:       state.Symbols,
 		VotingActive:  state.VotingActive,
 		TalkingActive: state.TalkingActive,
-		CurrentCards:  state.CurrentCards,
+		ActiveSetCode: state.ActiveSetCode,
 		TimeLeft:      timeLeft,
 		Error:         r.URL.Query().Get("error"),
 	}
@@ -600,7 +665,7 @@ func voteHandler(w http.ResponseWriter, r *http.Request) {
 		}}, state.History...)
 		state.VotingActive = false
 		state.Symbols = make(map[string]*Symbol)
-		state.CurrentCards = nil
+		state.ActiveSetCode = ""
 	}
 
 	http.Redirect(w, r, "/client?username="+username, http.StatusSeeOther)
@@ -635,20 +700,18 @@ func forceArchiveActiveSession() {
 	state.VotingActive = false
 	state.TalkingActive = false
 	state.Symbols = make(map[string]*Symbol)
-	state.CurrentCards = nil
+	state.ActiveSetCode = ""
 }
 
-// tryFetchScryfallData attempts to retrieve cards if input matching a real MTG set code is found.
-// It returns (Full Set Name, Cards Slice, true) on success, or fallback errors on failure.
-func tryFetchScryfallData(inputString string) (string, []ScryfallCard, bool) {
+// tryFetchScryfallData checks if input matches an MTG set. Returns (Full Set Name, rawCode, true) or fallback.
+func tryFetchScryfallData(inputString string) (string, string, bool) {
 	cleanedCode := strings.TrimSpace(strings.ToLower(inputString))
 	if len(cleanedCode) < 3 || len(cleanedCode) > 5 {
-		return "", nil, false // Optimization: skip hitting API if layout is definitely a custom phrase
+		return "", "", false 
 	}
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := &http.Client{Timeout: 4 * time.Second}
 	
-	// Check set metadata presence
 	setURL := fmt.Sprintf("https://api.scryfall.com/sets/%s", cleanedCode)
 	req, _ := http.NewRequest("GET", setURL, nil)
 	req.Header.Set("User-Agent", "MtgViewerPollingApp/1.0")
@@ -656,7 +719,7 @@ func tryFetchScryfallData(inputString string) (string, []ScryfallCard, bool) {
 	
 	resp, err := client.Do(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
-		return "", nil, false // Silent fallback: Treat input as plain text symbol topic
+		return "", "", false 
 	}
 	defer resp.Body.Close()
 
@@ -664,55 +727,10 @@ func tryFetchScryfallData(inputString string) (string, []ScryfallCard, bool) {
 		Name string `json:"name"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&setMeta); err != nil {
-		return "", nil, false
+		return "", "", false
 	}
 
-	// Fetch cards belonging to matching set query
-	searchURL := fmt.Sprintf("https://api.scryfall.com/cards/search?q=s:%s", cleanedCode)
-	reqSearch, _ := http.NewRequest("GET", searchURL, nil)
-	reqSearch.Header.Set("User-Agent", "MtgViewerPollingApp/1.0")
-	reqSearch.Header.Set("Accept", "application/json")
-
-	respSearch, err := client.Do(reqSearch)
-	if err != nil || respSearch.StatusCode != http.StatusOK {
-		return setMeta.Name, nil, true // Return set text context even if card arrays parse dry
-	}
-	defer respSearch.Body.Close()
-
-	var scryfallResponse struct {
-		Data []struct {
-			Name       string `json:"name"`
-			ImageUris  struct {
-				Normal string `json:"normal"`
-			} `json:"image_uris"`
-			CardFaces []struct {
-				Name      string `json:"name"`
-				ImageUris struct {
-					Normal string `json:"normal"`
-				} `json:"image_uris"`
-			} `json:"card_faces"`
-		} `json:"data"`
-	}
-
-	if err := json.NewDecoder(respSearch.Body).Decode(&scryfallResponse); err != nil {
-		return setMeta.Name, nil, true
-	}
-
-	var parsedCards []ScryfallCard
-	for _, rawCard := range scryfallResponse.Data {
-		imgURL := rawCard.ImageUris.Normal
-		if imgURL == "" && len(rawCard.CardFaces) > 0 {
-			imgURL = rawCard.CardFaces[0].ImageUris.Normal
-		}
-		if imgURL != "" {
-			parsedCards = append(parsedCards, ScryfallCard{
-				Name:     rawCard.Name,
-				ImageURL: imgURL,
-			})
-		}
-	}
-
-	return setMeta.Name, parsedCards, true
+	return setMeta.Name, cleanedCode, true
 }
 
 func startVotingHandler(w http.ResponseWriter, r *http.Request) {
@@ -728,10 +746,9 @@ func startVotingHandler(w http.ResponseWriter, r *http.Request) {
 	target, _ := strconv.Atoi(r.FormValue("target"))
 	durationSec, _ := strconv.Atoi(r.FormValue("duration"))
 
-	// Check for card context completely inline
-	displayName, cards, isSet := tryFetchScryfallData(rawInput)
+	displayName, parsedCode, isSet := tryFetchScryfallData(rawInput)
 	if isSet {
-		state.CurrentCards = cards
+		state.ActiveSetCode = parsedCode
 		state.Symbols[displayName] = &Symbol{Name: displayName, Votes: 0, Target: target}
 	} else {
 		state.Symbols[rawInput] = &Symbol{Name: rawInput, Votes: 0, Target: target}
@@ -755,10 +772,9 @@ func startTalkingHandler(w http.ResponseWriter, r *http.Request) {
 	rawInput := r.FormValue("symbol_name")
 	durationSec, _ := strconv.Atoi(r.FormValue("duration"))
 
-	// Check for card context completely inline
-	displayName, cards, isSet := tryFetchScryfallData(rawInput)
+	displayName, parsedCode, isSet := tryFetchScryfallData(rawInput)
 	if isSet {
-		state.CurrentCards = cards
+		state.ActiveSetCode = parsedCode
 		state.Symbols[displayName] = &Symbol{Name: displayName, Votes: 0, Target: 0}
 	} else {
 		state.Symbols[rawInput] = &Symbol{Name: rawInput, Votes: 0, Target: 0}
