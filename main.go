@@ -509,7 +509,7 @@ var templates = template.Must(template.New("all").Parse(`
                         let serverTimeRaw = newSessionArea.getAttribute("data-time-left");
                         if (serverTimeRaw) {
                             let parsedServerTime = parseInt(serverTimeRaw);
-                            if (Math.abs(globalTimeLeft - parsedServerTime) > 1 || parsedServerTime === 0) {
+                            if (Math.abs(globalTimeLeft - parsedServerTime) > 2 || parsedServerTime === 0) {
                                 globalTimeLeft = parsedServerTime;
                             }
                         }
@@ -613,7 +613,7 @@ var templates = template.Must(template.New("all").Parse(`
                     {{end}}
                 {{end}}
                 {{if .ActiveSetCode}}
-                    <input type="text" id="scryfall-search-input" value="s:{{.ActiveSetCode}} "
+                    <input type="text" id="scryfall-search-input" value="s:{{.ActiveSetCode}} game:paper "
                            oninput="handleSearchInput(this.value)"
                            class="topbar-search"
                            placeholder="Filter e.g. s:{{.ActiveSetCode}} c:red r:rare">
@@ -641,7 +641,7 @@ var templates = template.Must(template.New("all").Parse(`
                     </span>
                 {{end}}
                 {{if .ActiveSetCode}}
-                    <input type="text" id="scryfall-search-input" value="s:{{.ActiveSetCode}} "
+                    <input type="text" id="scryfall-search-input" value="s:{{.ActiveSetCode}} game:paper "
                            oninput="handleSearchInput(this.value)"
                            class="topbar-search"
                            placeholder="Filter e.g. s:{{.ActiveSetCode}} c:red r:rare">
