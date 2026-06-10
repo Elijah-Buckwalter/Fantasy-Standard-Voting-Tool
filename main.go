@@ -50,17 +50,19 @@ type ServerState struct {
 	ActiveSetCode string // Tracks the raw code (e.g. "neo") if it's an MTG Set
 
 	// --- Custom Between-States Fields ---
-	TransitionMode string    // "pre-talking", "pre-voting", "post-voting-success", "post-voting-fail", "terminated", "post-talking"
-	TransitionEnd  time.Time // Pinpoint expiration for countdowns / results panels
+	TransitionMode     string        // "pre-talking", "pre-voting", "post-voting-success", "post-voting-fail", "terminated", "post-talking"
+	TransitionEnd      time.Time     // Pinpoint expiration for countdowns / results panels
+	TransitionDuration time.Duration // Configurable transition duration, defaults to 5 seconds
 }
 
 var state = &ServerState{
-	MasterPass:    "master123",
-	Users:         make(map[string]*User),
-	Symbols:       make(map[string]*Symbol),
-	History:       make([]HistoricalSession, 0),
-	VotingActive:  false,
-	TalkingActive: false,
+	MasterPass:         "master123",
+	Users:              make(map[string]*User),
+	Symbols:            make(map[string]*Symbol),
+	History:            make([]HistoricalSession, 0),
+	VotingActive:       false,
+	TalkingActive:      false,
+	TransitionDuration: 5 * time.Second,
 }
 
 var templates = template.Must(template.New("all").Parse(`
@@ -171,7 +173,7 @@ var templates = template.Must(template.New("all").Parse(`
 
     <script>
         document.getElementById('qr-portal-btn').addEventListener('click', function() {
-            var targetUrl = 'https://unknotty-overstrong-atticus.ngrok-free.dev/'; 
+            var targetUrl = 'https://unknotty-overstrong-atticus.ngrok-free.dev/?ngrok-skip-browser-warning=true';
             var qrApiUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=' + encodeURIComponent(targetUrl);
             var varTab = window.open();
             varTab.document.write(
@@ -190,6 +192,7 @@ var templates = template.Must(template.New("all").Parse(`
             
             <div style="border-top: 1px dashed #ccc; padding-top: 10px; margin-bottom: 10px;">
                 <input type="number" name="target" placeholder="Ticket Threshold (Voting Only)"><br><br>
+                <input type="number" name="transition_duration" placeholder="Transition Duration in Seconds (Default: 5)"><br><br>
                 <button type="submit" formaction="/master/start-voting" style="background: green; color: white;">Start VOTING Session</button>
                 <button type="submit" formaction="/master/start-talking" style="background: blue; color: white;">Start TALKING Session</button>
             </div>
@@ -282,7 +285,10 @@ var templates = template.Must(template.New("all").Parse(`
             font-size: 5rem;
             font-weight: 900;
             margin: 20px 0;
-            animation: pulseImpact 1s ease-out infinite;
+            animation-name: pulseImpact;
+            animation-duration: var(--transition-anim-duration, 1s);
+            animation-timing-function: ease-out;
+            animation-iteration-count: infinite;
         }
         .sub-header {
             font-size: 1.5rem;
@@ -496,7 +502,7 @@ var templates = template.Must(template.New("all").Parse(`
     
     {{if .TransitionMode}}
         <div id="session-area" data-session-state="transition-{{.TransitionMode}}" data-time-left="{{.TimeLeft}}" data-set-code="{{.ActiveSetCode}}">
-             <div class="countdown-overlay">
+             <div class="countdown-overlay" style="--transition-anim-duration: {{if gt .TransitionDuration 0}}{{.TransitionDuration}}s{{else}}1s{{end}}">
                  {{if eq .TransitionMode "pre-talking"}}
                      <div class="sub-header" style="color: #63b3ed;">Discussion Session Approaching.</div>
                      <div id="animated-timer" class="animate-pop" style="color: #3182ce;">{{if eq .TimeLeft 0}}Begin{{else}}{{.TimeLeft}}s{{end}}</div>
@@ -716,7 +722,7 @@ func checkAndArchiveExpiredSession() {
 			}
 
 			state.TransitionMode = "post-voting-fail"
-			state.TransitionEnd = now.Add(5 * time.Second) 
+			state.TransitionEnd = now.Add(state.TransitionDuration)
 			state.TimerEnd = state.TransitionEnd
 		} else if state.TalkingActive {
 			for _, sym := range state.Symbols {
@@ -725,7 +731,7 @@ func checkAndArchiveExpiredSession() {
 			
 			// Trigger talking session expiration transition screen
 			state.TransitionMode = "post-talking"
-			state.TransitionEnd = now.Add(5 * time.Second)
+			state.TransitionEnd = now.Add(state.TransitionDuration)
 			state.TimerEnd = state.TransitionEnd
 		}
 
@@ -760,25 +766,27 @@ func masterDashboardHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := struct {
-		Users          map[string]*User
-		Symbols        map[string]*Symbol
-		History        []HistoricalSession
-		VotingActive   bool
-		TalkingActive  bool
-		ActiveSetCode  string
-		TimeLeft       int
-		Error          string
-		TransitionMode string
+		Users              map[string]*User
+		Symbols            map[string]*Symbol
+		History            []HistoricalSession
+		VotingActive       bool
+		TalkingActive      bool
+		ActiveSetCode      string
+		TimeLeft           int
+		Error              string
+		TransitionMode     string
+		TransitionDuration int
 	}{
-		Users:          state.Users,
-		Symbols:        state.Symbols,
-		History:        state.History,
-		VotingActive:   state.VotingActive,
-		TalkingActive:  state.TalkingActive,
-		ActiveSetCode:  state.ActiveSetCode,
-		TimeLeft:       timeLeft,
-		Error:          r.URL.Query().Get("error"),
-		TransitionMode: state.TransitionMode,
+		Users:              state.Users,
+		Symbols:            state.Symbols,
+		History:            state.History,
+		VotingActive:       state.VotingActive,
+		TalkingActive:      state.TalkingActive,
+		ActiveSetCode:      state.ActiveSetCode,
+		TimeLeft:           timeLeft,
+		Error:              r.URL.Query().Get("error"),
+		TransitionMode:     state.TransitionMode,
+		TransitionDuration: int(state.TransitionDuration.Seconds()),
 	}
 
 	templates.ExecuteTemplate(w, "master", data)
@@ -811,25 +819,27 @@ func clientDashboardHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := struct {
-		Username       string
-		Tickets        int
-		Symbols        map[string]*Symbol
-		VotingActive   bool
-		TalkingActive  bool
-		ActiveSetCode  string
-		TimeLeft       int
-		Error          string
-		TransitionMode string
+		Username           string
+		Tickets            int
+		Symbols            map[string]*Symbol
+		VotingActive       bool
+		TalkingActive      bool
+		ActiveSetCode      string
+		TimeLeft           int
+		Error              string
+		TransitionMode     string
+		TransitionDuration int
 	}{
-		Username:       username,
-		Tickets:        user.Tickets,
-		Symbols:        state.Symbols,
-		VotingActive:   state.VotingActive,
-		TalkingActive:  state.TalkingActive,
-		ActiveSetCode:  state.ActiveSetCode,
-		TimeLeft:       timeLeft,
-		Error:          r.URL.Query().Get("error"),
-		TransitionMode: state.TransitionMode,
+		Username:           username,
+		Tickets:            user.Tickets,
+		Symbols:            state.Symbols,
+		VotingActive:       state.VotingActive,
+		TalkingActive:      state.TalkingActive,
+		ActiveSetCode:      state.ActiveSetCode,
+		TimeLeft:           timeLeft,
+		Error:              r.URL.Query().Get("error"),
+		TransitionMode:     state.TransitionMode,
+		TransitionDuration: int(state.TransitionDuration.Seconds()),
 	}
 	state.mu.Unlock()
 
@@ -882,7 +892,7 @@ func voteHandler(w http.ResponseWriter, r *http.Request) {
 		
 		state.VotingActive = false
 		state.TransitionMode = "post-voting-success"
-		state.TransitionEnd = time.Now().Add(5 * time.Second) 
+		state.TransitionEnd = time.Now().Add(state.TransitionDuration)
 		state.TimerEnd = state.TransitionEnd
 	}
 
@@ -920,7 +930,7 @@ func forceArchiveActiveSession() {
 	
 	// Trigger the "Session Terminated" overlay state for exactly 5 seconds
 	state.TransitionMode = "terminated" 
-	state.TransitionEnd = time.Now().Add(5 * time.Second)
+	state.TransitionEnd = time.Now().Add(state.TransitionDuration)
 	state.TimerEnd = state.TransitionEnd
 	
 	state.Symbols = make(map[string]*Symbol)
@@ -968,6 +978,11 @@ func startVotingHandler(w http.ResponseWriter, r *http.Request) {
 	rawInput := r.FormValue("symbol_name")
 	target, _ := strconv.Atoi(r.FormValue("target"))
 	durationSec, _ := strconv.Atoi(r.FormValue("duration"))
+	transitionSec, err := strconv.Atoi(r.FormValue("transition_duration"))
+	if err != nil || transitionSec <= 0 {
+		transitionSec = 5
+	}
+	state.TransitionDuration = time.Duration(transitionSec) * time.Second
 
 	displayName, parsedCode, isSet := tryFetchScryfallData(rawInput)
 	if isSet {
@@ -978,7 +993,7 @@ func startVotingHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	state.TransitionMode = "pre-voting"
-	state.TransitionEnd = time.Now().Add(3 * time.Second)
+	state.TransitionEnd = time.Now().Add(state.TransitionDuration)
 	state.TimerEnd = state.TransitionEnd.Add(time.Duration(durationSec) * time.Second)
 
 	http.Redirect(w, r, "/master", http.StatusSeeOther)
@@ -995,6 +1010,11 @@ func startTalkingHandler(w http.ResponseWriter, r *http.Request) {
 
 	rawInput := r.FormValue("symbol_name")
 	durationSec, _ := strconv.Atoi(r.FormValue("duration"))
+	transitionSec, err := strconv.Atoi(r.FormValue("transition_duration"))
+	if err != nil || transitionSec <= 0 {
+		transitionSec = 5
+	}
+	state.TransitionDuration = time.Duration(transitionSec) * time.Second
 
 	displayName, parsedCode, isSet := tryFetchScryfallData(rawInput)
 	if isSet {
@@ -1005,7 +1025,7 @@ func startTalkingHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	state.TransitionMode = "pre-talking"
-	state.TransitionEnd = time.Now().Add(3 * time.Second)
+	state.TransitionEnd = time.Now().Add(state.TransitionDuration)
 	state.TimerEnd = state.TransitionEnd.Add(time.Duration(durationSec) * time.Second)
 
 	http.Redirect(w, r, "/master", http.StatusSeeOther)
