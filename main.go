@@ -341,6 +341,43 @@ var templates = template.Must(template.New("all").Parse(`
             font-family: system-ui, sans-serif;
             backdrop-filter: blur(8px);
         }
+
+        /* Burn Ticket Overlay */
+        .burn-overlay {
+            position: fixed;
+            top: 0; left: 0; width: 100vw; height: 100vh;
+            background: rgba(10, 15, 30, 0.85);
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            z-index: 9998; color: white; text-align: center;
+            font-family: system-ui, sans-serif;
+            backdrop-filter: blur(4px);
+            animation: burnFadeIn 0.15s ease-out forwards;
+        }
+        .burn-ticket-emoji {
+            font-size: 5rem;
+            animation: burnTicket 0.6s ease-in forwards;
+            display: block;
+        }
+        .burn-label {
+            font-size: 1.1rem;
+            font-weight: bold;
+            color: #fbd38d;
+            margin-top: 10px;
+            letter-spacing: 1px;
+            text-transform: uppercase;
+            animation: burnFadeIn 0.15s ease-out forwards;
+        }
+        @keyframes burnFadeIn {
+            0% { opacity: 0; }
+            100% { opacity: 1; }
+        }
+        @keyframes burnTicket {
+            0%   { transform: scale(1) rotate(0deg);   opacity: 1;   filter: brightness(1); }
+            30%  { transform: scale(1.2) rotate(-5deg); opacity: 1;  filter: brightness(1.4) sepia(0.3); }
+            60%  { transform: scale(0.95) rotate(3deg); opacity: 0.8; filter: brightness(1.8) sepia(0.8) hue-rotate(-20deg); }
+            100% { transform: scale(0.6) rotate(-8deg); opacity: 0;   filter: brightness(2.5) sepia(1) hue-rotate(-30deg); }
+        }
         .animate-pop {
             font-size: 5rem;
             font-weight: 900;
@@ -377,6 +414,15 @@ var templates = template.Must(template.New("all").Parse(`
             document.getElementById('theme-icon').innerText = isLight ? '🌙 Dark Mode' : '☀️ Light Mode';
         }
         initTheme();
+
+        function showBurnOverlay(form) {
+            const overlay = document.createElement('div');
+            overlay.className = 'burn-overlay';
+            overlay.innerHTML = '<span class="burn-ticket-emoji">🎟️</span><span class="burn-label">Ticket Used!</span>';
+            document.body.appendChild(overlay);
+            form.dataset.burning = "true";
+            setTimeout(() => { form.submit(); }, 1280);
+        }
 
         let globalTimeLeft = {{.TimeLeft}};
         let currentLoadedSetCode = "{{.ActiveSetCode}}";
@@ -605,7 +651,7 @@ var templates = template.Must(template.New("all").Parse(`
                     {{if $sym.Reached}}
                         <button disabled class="interactive-node" style="color:red; background:transparent; border:2px dashed red; padding:3px 10px; font-weight:bold; cursor:not-allowed; font-size:0.8rem;">Threshold Closed</button>
                     {{else}}
-                        <form action="/client/vote" method="POST" style="display:inline;" class="interactive-node">
+                        <form action="/client/vote" method="POST" style="display:inline;" class="interactive-node" onsubmit="if(!this.dataset.burning){ event.preventDefault(); showBurnOverlay(this); }">
                             <input type="hidden" name="username" value="{{$.Username}}">
                             <input type="hidden" name="symbol" value="{{$sym.Name}}">
                             <button type="submit" style="background:green; color:white; padding:3px 12px; border:3px solid #000; border-radius:0; font-weight:bold; cursor:pointer; font-size:0.85rem;">Use 1 Ticket to Vote</button>
