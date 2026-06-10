@@ -270,6 +270,66 @@ var templates = template.Must(template.New("all").Parse(`
         .header-container { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
         .toggle-btn { background: var(--bg-card); color: var(--text-main); border: 1px solid var(--border); padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 0.85rem; font-weight: bold; }
 
+        /* Sticky Session Top Bar */
+        .session-topbar {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            z-index: 100;
+            background: var(--bg-card);
+            border-bottom: 2px solid var(--border);
+            padding: 8px 16px;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 10px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+        .session-topbar .topbar-username {
+            font-weight: bold;
+            font-size: 0.95rem;
+            color: var(--text-main);
+            white-space: nowrap;
+        }
+        .session-topbar .topbar-tickets {
+            background: var(--ticket-bg);
+            border: 1px solid var(--border);
+            padding: 3px 10px;
+            font-size: 0.85rem;
+            white-space: nowrap;
+        }
+        .session-topbar .topbar-timer {
+            font-weight: bold;
+            font-size: 0.9rem;
+            color: orange;
+            white-space: nowrap;
+        }
+        .session-topbar .topbar-symbol {
+            font-weight: bold;
+            font-size: 0.9rem;
+            color: var(--text-main);
+            white-space: nowrap;
+        }
+        .session-topbar .topbar-search {
+            flex: 1;
+            min-width: 180px;
+            max-width: 400px;
+            padding: 5px 8px;
+            font-size: 0.85rem;
+            border: 2px solid var(--search-border);
+            background: var(--bg-body);
+            color: var(--text-main);
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        .session-topbar .topbar-search-status {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            white-space: nowrap;
+        }
+        .body-with-topbar {
+            padding-top: 70px;
+        }
+
         /* Animation Classes */
         .countdown-overlay {
             position: fixed;
@@ -488,17 +548,19 @@ var templates = template.Must(template.New("all").Parse(`
     </script>
 </head>
 <body>
-    <div class="header-container">
-        <h2>Welcome, {{.Username}}</h2>
-        <div>
-            <button class="toggle-btn" onclick="toggleTheme()" id="theme-icon">☀️ Light Mode</button>
+    {{if not (or .VotingActive .TalkingActive)}}
+        <div class="header-container">
+            <h2>Welcome, {{.Username}}</h2>
+            <div>
+                <button class="toggle-btn" onclick="toggleTheme()" id="theme-icon">☀️ Light Mode</button>
+            </div>
         </div>
-    </div>
-    <div style="background: var(--ticket-bg); padding:10px; display:inline-block; border: 1px solid var(--border);">
-        Your Current Ticket Count: <strong id="ticket-count" style="font-size:1.5em; color:blue;">{{.Tickets}}</strong>
-    </div>
-    {{if .Error}}<p style="color:red; font-weight:bold;">{{.Error}}</p>{{end}}
-    <hr style="border: 0; border-top: 1px solid var(--border);">
+        <div style="background: var(--ticket-bg); padding:10px; display:inline-block; border: 1px solid var(--border);">
+            Your Current Ticket Count: <strong id="ticket-count" style="font-size:1.5em; color:red;">{{.Tickets}}</strong>
+        </div>
+        {{if .Error}}<p style="color:red; font-weight:bold;">{{.Error}}</p>{{end}}
+        <hr style="border: 0; border-top: 1px solid var(--border);">
+    {{end}}
     
     {{if .TransitionMode}}
         <div id="session-area" data-session-state="transition-{{.TransitionMode}}" data-time-left="{{.TimeLeft}}" data-set-code="{{.ActiveSetCode}}">
@@ -530,73 +592,69 @@ var templates = template.Must(template.New("all").Parse(`
         </div>
     {{else if .VotingActive}}
         <div id="session-area" data-session-state="voting" data-time-left="{{.TimeLeft}}" data-set-code="{{.ActiveSetCode}}">
-            <h3>Active Session</h3>
-            <p id="timer" style="font-size:1.2em; font-weight:bold; color:orange;">{{.TimeLeft}}s remaining</p>
-            {{range $name, $sym := .Symbols}}
-                <!-- Blocky Node with Heavy Border -->
-                <div class="interactive-node" style="border: 3px solid #000000; padding: 10px; margin-bottom: 10px; background: var(--bg-card);">
-                    
-                    <!-- Inline Wrapper for Symbol Name and Threshold -->
-                    <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap;">
-                        <strong style="font-size: 1.1em; color: var(--text-main);">Symbol up for Vote: {{ $sym.Name }}</strong>
-                        
-                        <!-- Blocky Master Threshold Value Target Tag -->
-                        <span style="background: #000000; color: #FFFFFF; padding: 2px 8px; font-size: 0.85rem; font-weight: bold; text-transform: uppercase; border-radius: 0px;">
-                            Target: {{ $sym.Target }}
-                        </span>
-                    </div>
-
+            <div class="session-topbar">
+                <span class="topbar-username">{{$.Username}}</span>
+                <button class="toggle-btn" onclick="toggleTheme()" id="theme-icon">☀️ Light Mode</button>
+                <span class="topbar-tickets">🎟 <strong id="ticket-count">{{$.Tickets}}</strong></span>
+                <span class="topbar-timer" id="timer">{{.TimeLeft}}s remaining</span>
+                {{range $name, $sym := .Symbols}}
+                    <span class="topbar-symbol interactive-node">
+                        <span style="color: var(--text-muted); font-size:0.8rem;">Vote:</span> {{$sym.Name}}
+                        <span style="background:#000; color:#fff; padding:1px 6px; font-size:0.75rem; font-weight:bold; margin-left:4px;">Target: {{$sym.Target}}</span>
+                    </span>
                     {{if $sym.Reached}}
-                        <button disabled style="color: red; background: transparent; border: 2px dashed red; padding: 5px 15px; font-weight: bold; cursor: not-allowed;">
-                            Threshold Closed
-                        </button>
+                        <button disabled class="interactive-node" style="color:red; background:transparent; border:2px dashed red; padding:3px 10px; font-weight:bold; cursor:not-allowed; font-size:0.8rem;">Threshold Closed</button>
                     {{else}}
-                        <form action="/client/vote" method="POST" style="display:inline;">
+                        <form action="/client/vote" method="POST" style="display:inline;" class="interactive-node">
                             <input type="hidden" name="username" value="{{$.Username}}">
                             <input type="hidden" name="symbol" value="{{$sym.Name}}">
-                            <!-- Blocky, sharp voting button -->
-                            <button type="submit" style="background: green; color: white; padding: 5px 15px; border: 3px solid #000000; border-radius: 0px; font-weight: bold; cursor: pointer;">
-                                Use 1 Ticket to Vote
-                            </button>
+                            <button type="submit" style="background:green; color:white; padding:3px 12px; border:3px solid #000; border-radius:0; font-weight:bold; cursor:pointer; font-size:0.85rem;">Use 1 Ticket to Vote</button>
                         </form>
                     {{end}}
-                </div>
-            {{end}}
-
-            {{if .ActiveSetCode}}
-                <div style="margin-top:20px; border-top: 2px solid var(--border); padding-top: 15px;">
-                    <h4 style="color: purple; margin-bottom: 8px;">🃏 Filter Live Set Content:</h4>
-                    <input type="text" id="scryfall-search-input" value="s:{{.ActiveSetCode}} " 
+                {{end}}
+                {{if .ActiveSetCode}}
+                    <input type="text" id="scryfall-search-input" value="s:{{.ActiveSetCode}} "
                            oninput="handleSearchInput(this.value)"
-                           style="width: 100%; max-width: 500px; padding: 10px; font-size: 1rem; border: 2px solid var(--search-border); background: var(--bg-card); color: var(--text-main); border-radius: 4px; box-sizing: border-box;" 
+                           class="topbar-search"
                            placeholder="Filter e.g. s:{{.ActiveSetCode}} c:red r:rare">
-                    <p id="scryfall-status" style="font-size: 0.85rem; font-weight: bold; color: var(--text-muted); margin: 6px 0 12px 0;">Initializing...</p>
-                    <div id="scryfall-live-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px;"></div>
-                </div>
-            {{end}}
+                    <span id="scryfall-status" class="topbar-search-status">Initializing...</span>
+                {{end}}
+            </div>
+            <div class="body-with-topbar">
+                {{if .ActiveSetCode}}
+                    <div id="scryfall-live-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); gap:12px;"></div>
+                {{else}}
+                    <p style="color: var(--text-muted); margin-top: 10px;">No card set active for this session.</p>
+                {{end}}
+            </div>
         </div>
     {{else if .TalkingActive}}
         <div id="session-area" data-session-state="talking" data-time-left="{{.TimeLeft}}" data-set-code="{{.ActiveSetCode}}">
-            <h3>Active Session</h3>
-            <p id="timer" style="font-size:1.2em; font-weight:bold; color:orange;">{{.TimeLeft}}s remaining</p>
-            {{range $name, $sym := .Symbols}}
-                <div class="interactive-node" style="border:1px solid blue; background: var(--card-scryfall); padding:15px; margin-bottom:5px; border-radius:5px;">
-                    <strong style="font-size: 1.3em;">Currently Discussing: {{ $sym.Name }}</strong> 
-                    <p style="color: var(--text-muted); margin-bottom:0;">🗣️ Talking session is open. No tickets required, voting is disabled.</p>
-                </div>
-            {{end}}
-
-            {{if .ActiveSetCode}}
-                <div style="margin-top:20px; border-top: 2px solid var(--border); padding-top: 15px;">
-                    <h4 style="color: purple; margin-bottom: 8px;">🃏 Filter Live Set Content:</h4>
-                    <input type="text" id="scryfall-search-input" value="s:{{.ActiveSetCode}} " 
+            <div class="session-topbar">
+                <span class="topbar-username">{{$.Username}}</span>
+                <button class="toggle-btn" onclick="toggleTheme()" id="theme-icon">☀️ Light Mode</button>
+                <span class="topbar-tickets">🎟 <strong id="ticket-count">{{$.Tickets}}</strong></span>
+                <span class="topbar-timer" id="timer">{{.TimeLeft}}s remaining</span>
+                {{range $name, $sym := .Symbols}}
+                    <span class="topbar-symbol interactive-node" style="color: #63b3ed;">
+                        <span style="color: var(--text-muted); font-size:0.8rem;">🗣️ Discussing:</span> {{$sym.Name}}
+                    </span>
+                {{end}}
+                {{if .ActiveSetCode}}
+                    <input type="text" id="scryfall-search-input" value="s:{{.ActiveSetCode}} "
                            oninput="handleSearchInput(this.value)"
-                           style="width: 100%; max-width: 500px; padding: 10px; font-size: 1rem; border: 2px solid var(--search-border); background: var(--bg-card); color: var(--text-main); border-radius: 4px; box-sizing: border-box;" 
+                           class="topbar-search"
                            placeholder="Filter e.g. s:{{.ActiveSetCode}} c:red r:rare">
-                    <p id="scryfall-status" style="font-size: 0.85rem; font-weight: bold; color: var(--text-muted); margin: 6px 0 12px 0;">Initializing...</p>
-                    <div id="scryfall-live-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px;"></div>
-                </div>
-            {{end}}
+                    <span id="scryfall-status" class="topbar-search-status">Initializing...</span>
+                {{end}}
+            </div>
+            <div class="body-with-topbar">
+                {{if .ActiveSetCode}}
+                    <div id="scryfall-live-grid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(140px, 1fr)); gap:12px;"></div>
+                {{else}}
+                    <p style="color: var(--text-muted); margin-top: 10px;">No card set active for this session.</p>
+                {{end}}
+            </div>
         </div>
     {{else}}
         <div id="session-area" data-session-state="none" data-time-left="0" data-set-code="">
